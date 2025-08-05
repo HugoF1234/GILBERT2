@@ -105,7 +105,7 @@ cd ~/gilbert
 if [ ! -d "backend" ]; then
     log_info "Clonage du projet..."
     # TODO: Remplacer par votre URL de repository GitHub
-    git clone https://github.com/mathisescriva/Gilbert
+    git clone https://github.com/HugoF1234/GILBERT.git .
 fi
 
 # Création des répertoires pour les certificats SSL

@@ -17,7 +17,7 @@ usermod -aG sudo gilbert
 su - gilbert
 
 # Télécharger et exécuter l'installation
-wget -O setup.sh https://raw.githubusercontent.com/votre-username/gilbert/main/deployment/setup-vps.sh
+wget -O setup.sh https://raw.githubusercontent.com/HugoF1234/GILBERT/main/deployment/setup-vps.sh
 chmod +x setup.sh
 ./setup.sh
 ```
@@ -37,11 +37,11 @@ nano .env
 ### 4. Variables minimales à configurer
 ```bash
 # Dans le fichier .env, modifiez au minimum :
-DOMAIN_NAME=votre-domaine.com
-SSL_EMAIL=votre-email@domaine.com
-POSTGRES_PASSWORD=mot_de_passe_super_securise
-JWT_SECRET=jwt_secret_super_securise_et_long
-ASSEMBLYAI_API_KEY=votre_cle_api_assemblyai
+DOMAIN_NAME=gilbert-assistant.ovh
+SSL_EMAIL=hugofouan@gmail.com
+POSTGRES_PASSWORD=gilbertmdp2025
+JWT_SECRET=GilbertJWT2025!SuperSecretKey32Chars
+ASSEMBLYAI_API_KEY=3419005ee6924e08a14235043cabcd4e
 ```
 
 ### 5. Déploiement
@@ -62,13 +62,13 @@ Après le déploiement, vérifiez que tout fonctionne :
 docker-compose -f docker-compose.production.yml logs -f
 
 # Tester l'API
-curl https://votre-domaine.com/api/health
+curl https://gilbert-assistant.ovh/api/health
 ```
 
 ## 🌐 Accès à l'application
 
-- **Application** : https://votre-domaine.com
-- **API Documentation** : https://votre-domaine.com/api/docs
+- **Application** : https://gilbert-assistant.ovh
+- **API Documentation** : https://gilbert-assistant.ovh/api/docs
 - **Compte admin** : admin@gilbert.com / admin123
 
 ## 🔧 Commandes utiles

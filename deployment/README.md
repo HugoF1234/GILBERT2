@@ -45,7 +45,7 @@ su - gilbert
 
 ```bash
 # Télécharger le script d'installation
-wget https://raw.githubusercontent.com/votre-username/gilbert/main/deployment/setup-vps.sh
+wget https://raw.githubusercontent.com/HugoF1234/GILBERT/main/deployment/setup-vps.sh
 chmod +x setup-vps.sh
 ./setup-vps.sh
 ```
@@ -78,8 +78,8 @@ MISTRAL_API_KEY=votre_cle_api_mistral
 ### 6. Configuration DNS
 
 Configurez votre domaine pour pointer vers l'IP de votre VPS :
-- **A Record** : `@` → `votre-ip-vps`
-- **A Record** : `www` → `votre-ip-vps`
+- **A Record** : `@` → `51.38.177.18`
+- **A Record** : `www` → `51.38.177.18`
 
 ### 7. Déploiement
 
