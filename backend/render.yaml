@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: meeting-transcriber-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -w 1 --timeout 300 --graceful-timeout 120 --worker-class uvicorn.workers.UvicornWorker --max-requests 10 --max-requests-jitter 5 --preload app.main:app --bind 0.0.0.0:$PORT
+    envVars:
+      - key: ASSEMBLYAI_API_KEY
+        sync: false
+      - key: MISTRAL_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ENVIRONMENT
+        value: production
