@@ -13,7 +13,11 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 # Cache pour les vérifications de mot de passe récentes (5 minutes)
 password_verify_cache = {}
 
-# Fonctions de vérification mot de passe
+# Fonctions de gestion des mots de passe
+def get_password_hash(password: str) -> str:
+    """Hash a password using bcrypt"""
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against a hash using bcrypt with cache optimization"""
     # Clé de cache (combinaison du mot de passe en clair et du hash)
