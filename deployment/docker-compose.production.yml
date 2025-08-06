@@ -1,7 +1,4 @@
-version: '3.8'
-
 services:
-  # Base de données PostgreSQL
   postgres:
     image: postgres:15-alpine
     restart: always
@@ -20,7 +17,6 @@ services:
       timeout: 10s
       retries: 3
 
-  # Cache Redis
   redis:
     image: redis:7-alpine
     restart: always
@@ -35,10 +31,9 @@ services:
       timeout: 10s
       retries: 3
 
-  # Backend API
   api:
     build:
-      context: ./backend
+      context: ../backend
       dockerfile: Dockerfile
     restart: always
     environment:
@@ -48,7 +43,9 @@ services:
       - MISTRAL_API_KEY=${MISTRAL_API_KEY}
       - DATABASE_URL=postgresql://gilbert_user:${POSTGRES_PASSWORD}@postgres:5432/gilbert_db
       - REDIS_URL=redis://redis:6379/0
-      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+
+
+
       - DB_POOL_SIZE=10
       - DB_POOL_TIMEOUT=30
       - HTTP_TIMEOUT=60
@@ -59,7 +56,7 @@ services:
       - DEFAULT_LANGUAGE=fr
       - SPEAKER_LABELS=true
     volumes:
-      - ./backend/uploads:/app/uploads
+      - ../backend/uploads:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,21 +69,22 @@ services:
       retries: 3
       start_period: 30s
 
-  # Frontend React
   frontend:
     build:
-      context: ./frontend
+      context: ../frontend
       dockerfile: Dockerfile
+      args:
+        VITE_API_URL: "https://gilbert-assistant.ovh/api"
+        VITE_APP_NAME: Gilbert
     restart: always
     environment:
       - VITE_API_URL=${API_URL}
       - VITE_APP_NAME=Gilbert
     volumes:
-      - ./frontend/dist:/usr/share/nginx/html
+      - frontend:/usr/share/nginx/html
     depends_on:
       - api
 
-  # Nginx Reverse Proxy
   nginx:
     image: nginx:alpine
     restart: always
@@ -98,20 +96,23 @@ services:
       - ./nginx/ssl:/etc/nginx/ssl
       - ./certbot/conf:/etc/letsencrypt
       - ./certbot/www:/var/www/certbot
-      - ./backend/uploads:/var/www/uploads
+      - ../backend/uploads:/var/www/uploads
+      - frontend:/usr/share/nginx/html
     depends_on:
       - api
       - frontend
     command: "/bin/sh -c 'while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g \"daemon off;\"'"
 
-  # Certbot pour SSL automatique
   certbot:
     image: certbot/certbot
     volumes:
       - ./certbot/conf:/etc/letsencrypt
       - ./certbot/www:/var/www/certbot
     command: certonly --webroot --webroot-path=/var/www/certbot --email ${SSL_EMAIL} --agree-tos --no-eff-email -d ${DOMAIN_NAME} --force-renewal
+    depends_on:
+      - nginx
 
 volumes:
   postgres_data:
-  redis_data: 
+  redis_data:
+  frontend:

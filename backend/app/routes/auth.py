@@ -2,7 +2,7 @@ from datetime import timedelta, datetime
 from fastapi import APIRouter, Depends, HTTPException, Body, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import RedirectResponse
-from ..db.database import get_user_by_email_cached, create_user, get_password_hash, purge_old_entries_from_cache, get_user_by_oauth
+from ..db.postgresql_db import get_user_by_email_cached, create_user, get_password_hash, clear_user_cache
 from ..models.user import UserCreate, User, UserCreateOAuth
 from ..core.security import create_access_token, verify_password, get_current_user, purge_password_cache
 from ..core.config import settings

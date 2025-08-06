@@ -111,11 +111,22 @@ log_info "Configuration SSL avec Let's Encrypt..."
 if [ ! -f "certbot/conf/live/$DOMAIN_NAME/fullchain.pem" ]; then
     log_info "Génération du certificat SSL..."
     
+    # Créer les répertoires nécessaires
+    mkdir -p certbot/conf
+    mkdir -p certbot/www
+    
     # Arrêter temporairement Nginx pour le challenge
     docker-compose -f docker-compose.production.yml stop nginx
     
-    # Générer le certificat
-    docker-compose -f docker-compose.production.yml run --rm certbot
+    # Générer le certificat avec webroot
+    docker-compose -f docker-compose.production.yml run --rm certbot certonly \
+        --webroot \
+        --webroot-path=/var/www/certbot \
+        --email $SSL_EMAIL \
+        --agree-tos \
+        --no-eff-email \
+        -d $DOMAIN_NAME \
+        --force-renewal
     
     # Redémarrer Nginx
     docker-compose -f docker-compose.production.yml start nginx

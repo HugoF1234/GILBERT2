@@ -5,7 +5,7 @@ import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from ..core.config import settings
-from ..db.database import get_user_by_email, get_user_by_id
+from ..db.postgresql_db import get_user_by_email, get_user_by_id
 import functools
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
