@@ -261,4 +261,4 @@ def delete_meeting(meeting_id: str) -> bool:
         raise
     finally:
         if conn:
-            conn.close() 
+            conn.close()
