@@ -28,7 +28,7 @@ class Settings(BaseSettings):
         ACCESS_TOKEN_EXPIRE_MINUTES = 525600  # 1 an (365 jours * 24 heures * 60 minutes)
     
     # Configuration CORS
-    CORS_ORIGINS: List[str] = ["*"]
+    CORS_ORIGINS: List[str] = ["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173", "http://localhost:4000", "http://localhost:5174", "http://127.0.0.1:5000", "*"]
     
     # Configuration des répertoires
     UPLOADS_DIR: Path = BASE_DIR / "uploads"
@@ -51,14 +51,12 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
     
     # Configuration de la base de données
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://gilbert_user:gilbertmdp2025@postgres:5432/gilbert_db")
-    
-    # Forcer l'utilisation de PostgreSQL en production
-    if os.getenv("ENVIRONMENT") == "production":
-        DATABASE_URL = "postgresql://gilbert_user:gilbertmdp2025@postgres:5432/gilbert_db"
-        print(f"🔧 FORCING POSTGRESQL: {DATABASE_URL}")
+    DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR}/app.db")
     DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "10"))
     DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+    
+    # Configuration Redis
+    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     
     # Timeout pour les requêtes HTTP vers AssemblyAI
     HTTP_TIMEOUT: int = int(os.getenv("HTTP_TIMEOUT", "30"))

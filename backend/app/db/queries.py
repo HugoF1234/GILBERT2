@@ -1,499 +1,524 @@
-"""
-Module unifié pour toutes les requêtes de base de données Gilbert
-Remplace postgresql_queries.py et assure la compatibilité avec l'ancien code SQLite
-"""
-
-import json
+import sqlite3
+import uuid
+from datetime import datetime, timedelta
+from .database import get_db_connection, release_db_connection
 import logging
-from datetime import datetime
-from typing import Optional, Dict, Any, List
 
-from .database import execute_query, get_db_cursor
+def create_meeting(meeting_data, user_id):
+    """
+    Créer une nouvelle réunion avec une meilleure gestion des transactions
+    pour éviter les erreurs 'database is locked'
+    """
+    # Logger pour le débogage
+    logger = logging.getLogger("fastapi")
+    logger.info(f"Création d'une nouvelle réunion pour l'utilisateur {user_id}")
+    
+    # Récupérer une nouvelle connexion pour cette transaction
+    conn = None
+    meeting = None
+    retry_count = 0
+    max_retries = 3
+    
+    while retry_count < max_retries:
+        try:
+            # Obtenir une nouvelle connexion
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Générer un ID unique pour la réunion
+            meeting_id = str(uuid.uuid4())
+            created_at = datetime.utcnow().isoformat()
+            
+            # Utiliser le statut fourni ou 'pending' par défaut
+            transcript_status = meeting_data.get("transcript_status", "pending")
+            
+            # Exécuter la requête d'insertion avec un timeout plus long
+            logger.info(f"Insertion de la réunion {meeting_id} dans la base de données")
+            cursor.execute(
+                """
+                INSERT INTO meetings (
+                    id, user_id, title, file_url, 
+                    transcript_status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    meeting_id, 
+                    user_id, 
+                    meeting_data["title"], 
+                    meeting_data["file_url"], 
+                    transcript_status, 
+                    created_at
+                )
+            )
+            
+            # Valider la transaction immédiatement
+            conn.commit()
+            logger.info(f"Réunion {meeting_id} créée avec succès")
+            
+            # Récupérer la réunion créée dans une nouvelle transaction
+            cursor.execute("SELECT * FROM meetings WHERE id = ?", (meeting_id,))
+            meeting = cursor.fetchone()
+            
+            # Si tout s'est bien passé, sortir de la boucle
+            break
+            
+        except sqlite3.OperationalError as e:
+            # Gestion spécifique de l'erreur 'database is locked'
+            if "database is locked" in str(e):
+                retry_count += 1
+                logger.warning(f"Base de données verrouillée, tentative {retry_count}/{max_retries}")
+                
+                # Attendre un peu avant de réessayer
+                import time
+                time.sleep(1)  # Attendre 1 seconde avant de réessayer
+                
+                # Fermer et réinitialiser la connexion
+                if conn:
+                    try:
+                        conn.close()
+                    except:
+                        pass
+            else:
+                # Autres erreurs SQLite
+                logger.error(f"Erreur SQLite lors de la création de la réunion: {str(e)}")
+                raise
+        except Exception as e:
+            # Autres erreurs non SQLite
+            logger.error(f"Erreur lors de la création de la réunion: {str(e)}")
+            raise
+        finally:
+            # Libérer la connexion dans tous les cas
+            if conn:
+                release_db_connection(conn)
+        
+    return dict(meeting) if meeting else None
 
-logger = logging.getLogger(__name__)
-
-# =============================================================================
-# FONCTIONS DE GESTION DES RÉUNIONS
-# =============================================================================
-
-def create_meeting(meeting_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Créer une nouvelle réunion"""
+def get_meeting(meeting_id, user_id):
+    """Récupérer les détails d'une réunion spécifique"""
+    logger = logging.getLogger("fastapi")
+    conn = get_db_connection()
     try:
-        query = """
-            INSERT INTO meetings (user_id, title, file_url, transcript_status, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            RETURNING *
-        """
-        params = (
-            meeting_data["user_id"],
-            meeting_data.get("title", ""),
-            meeting_data.get("file_url", ""),
-            meeting_data.get("transcript_status", "pending"),
-            datetime.utcnow(),
-            datetime.utcnow()
+        cursor = conn.cursor()
+        
+        # Log pour le debugging
+        logger.info(f"DB Query: Getting meeting with ID: {meeting_id} for user: {user_id}")
+        
+        cursor.execute(
+            "SELECT * FROM meetings WHERE id = ? AND user_id = ?", 
+            (meeting_id, user_id)
         )
-        
-        result = execute_query(query, params, fetch='one')
-        
-        if result:
-            # Normaliser les IDs pour compatibilité
-            result['id'] = str(result['id'])
-            result['user_id'] = str(result['user_id'])
-            return result
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"Erreur lors de la création de la réunion: {e}")
-        raise
-
-def get_meeting(meeting_id: str, user_id: str = None) -> Optional[Dict[str, Any]]:
-    """Récupérer une réunion par ID"""
-    try:
-        if user_id:
-            query = "SELECT * FROM meetings WHERE id = %s AND user_id = %s"
-            params = (meeting_id, user_id)
-        else:
-            query = "SELECT * FROM meetings WHERE id = %s"
-            params = (meeting_id,)
-        
-        meeting = execute_query(query, params, fetch='one')
+        meeting = cursor.fetchone()
         
         if meeting:
-            # Convertir les champs JSON si nécessaire
-            if meeting.get('metadata') and isinstance(meeting['metadata'], str):
-                try:
-                    meeting['metadata'] = json.loads(meeting['metadata'])
-                except:
-                    pass
+            meeting_dict = dict(meeting)
+            # Assurer la compatibilité avec le frontend qui attend transcription_status
+            meeting_dict['transcription_status'] = meeting_dict.get('transcript_status', 'pending')
             
-            # Normaliser les champs pour compatibilité
-            meeting['id'] = str(meeting['id'])
-            meeting['user_id'] = str(meeting['user_id'])
-            
-            return meeting
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"Erreur lors de la récupération de la réunion {meeting_id}: {e}")
-        raise
-
-def update_meeting(meeting_id: str, user_id: str, update_data: Dict[str, Any]) -> bool:
-    """Mettre à jour une réunion"""
-    try:
-        # Construire la requête de mise à jour
-        set_clauses = []
-        values = []
-        
-        for key, value in update_data.items():
-            if key in ['metadata'] and isinstance(value, dict):
-                # Convertir les dictionnaires en JSON pour PostgreSQL
-                set_clauses.append(f"{key} = %s")
-                values.append(json.dumps(value))
+            # Log des métadonnées pour le debugging
+            if 'duration_seconds' in meeting_dict:
+                logger.info(f"Meeting {meeting_id} has duration_seconds: {meeting_dict.get('duration_seconds')}")
             else:
-                set_clauses.append(f"{key} = %s")
-                values.append(value)
-        
-        if not set_clauses:
-            return False
-        
-        values.extend([datetime.utcnow(), meeting_id, user_id])
-        
-        query = f"""
-            UPDATE meetings 
-            SET {', '.join(set_clauses)}, updated_at = %s
-            WHERE id = %s AND user_id = %s
-        """
-        
-        rowcount = execute_query(query, tuple(values))
-        return rowcount > 0
-        
-    except Exception as e:
-        logger.error(f"Erreur lors de la mise à jour de la réunion {meeting_id}: {e}")
-        raise
-
-def get_meetings_by_user(user_id: str, limit: int = None) -> List[Dict[str, Any]]:
-    """Récupérer toutes les réunions d'un utilisateur"""
-    try:
-        query = "SELECT * FROM meetings WHERE user_id = %s ORDER BY created_at DESC"
-        params = (user_id,)
-        
-        if limit:
-            query += " LIMIT %s"
-            params = (user_id, limit)
-        
-        meetings = execute_query(query, params, fetch='all')
-        
-        # Normaliser les résultats
-        for meeting in meetings:
-            meeting['id'] = str(meeting['id'])
-            meeting['user_id'] = str(meeting['user_id'])
+                logger.warning(f"Meeting {meeting_id} does not have duration_seconds")
+                
+            if 'speakers_count' in meeting_dict:
+                logger.info(f"Meeting {meeting_id} has speakers_count: {meeting_dict.get('speakers_count')}")
+            else:
+                logger.warning(f"Meeting {meeting_id} does not have speakers_count")
             
-            # Convertir metadata si nécessaire
-            if meeting.get('metadata') and isinstance(meeting['metadata'], str):
-                try:
-                    meeting['metadata'] = json.loads(meeting['metadata'])
-                except:
-                    pass
-        
-        return meetings
-        
-    except Exception as e:
-        logger.error(f"Erreur lors de la récupération des réunions pour l'utilisateur {user_id}: {e}")
-        return []
-
-def get_meetings_by_status(status: str) -> List[Dict[str, Any]]:
-    """Récupérer les réunions par statut de transcription"""
-    try:
-        query = "SELECT * FROM meetings WHERE transcript_status = %s ORDER BY created_at"
-        meetings = execute_query(query, (status,), fetch='all')
-        
-        # Normaliser les résultats
-        for meeting in meetings:
-            meeting['id'] = str(meeting['id'])
-            meeting['user_id'] = str(meeting['user_id'])
-        
-        return meetings
-        
-    except Exception as e:
-        logger.error(f"Erreur lors de la récupération des réunions avec le statut {status}: {e}")
-        return []
-
-def get_pending_transcriptions() -> List[Dict[str, Any]]:
-    """Récupérer les transcriptions en attente"""
-    return get_meetings_by_status('pending')
-
-def delete_meeting(meeting_id: str, user_id: str = None) -> bool:
-    """Supprimer une réunion"""
-    try:
-        if user_id:
-            query = "DELETE FROM meetings WHERE id = %s AND user_id = %s"
-            params = (meeting_id, user_id)
-        else:
-            query = "DELETE FROM meetings WHERE id = %s"
-            params = (meeting_id,)
-        
-        rowcount = execute_query(query, params)
-        return rowcount > 0
-        
-    except Exception as e:
-        logger.error(f"Erreur lors de la suppression de la réunion {meeting_id}: {e}")
-        raise
-
-# =============================================================================
-# FONCTIONS DE GESTION DES LOCUTEURS
-# =============================================================================
-
-def get_meeting_speakers(meeting_id: str, user_id: str = None) -> List[Dict[str, Any]]:
-    """Récupérer les locuteurs d'une réunion"""
-    try:
-        query = """
-            SELECT s.* FROM speakers s
-            JOIN meetings m ON s.meeting_id = m.id
-            WHERE s.meeting_id = %s
-        """
-        params = [meeting_id]
-        
-        if user_id:
-            query += " AND m.user_id = %s"
-            params.append(user_id)
-        
-        query += " ORDER BY s.speaker_id"
-        
-        speakers = execute_query(query, tuple(params), fetch='all')
-        
-        # Normaliser les IDs
-        for speaker in speakers:
-            speaker['id'] = str(speaker['id'])
-            speaker['meeting_id'] = str(speaker['meeting_id'])
-        
-        return speakers
-        
-    except Exception as e:
-        logger.error(f"Erreur lors de la récupération des locuteurs pour la réunion {meeting_id}: {e}")
-        return []
-
-def create_speaker(speaker_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Créer un nouveau locuteur"""
-    try:
-        query = """
-            INSERT INTO speakers (meeting_id, speaker_id, custom_name, confidence, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            RETURNING *
-        """
-        params = (
-            speaker_data["meeting_id"],
-            speaker_data["speaker_id"],
-            speaker_data.get("custom_name"),
-            speaker_data.get("confidence", 0.0),
-            datetime.utcnow(),
-            datetime.utcnow()
-        )
-        
-        result = execute_query(query, params, fetch='one')
-        
-        if result:
-            result['id'] = str(result['id'])
-            result['meeting_id'] = str(result['meeting_id'])
-            return result
+            # Normaliser le format de la transcription
+            if 'transcript_text' in meeting_dict and meeting_dict['transcript_text']:
+                meeting_dict['transcript_text'] = normalize_transcript_format(meeting_dict['transcript_text'])
+                
+            return meeting_dict
         
         return None
-        
-    except Exception as e:
-        logger.error(f"Erreur lors de la création du locuteur: {e}")
-        raise
+    finally:
+        release_db_connection(conn)
 
-def update_speaker(meeting_id: str, speaker_id: str, update_data: Dict[str, Any]) -> bool:
-    """Mettre à jour un locuteur"""
-    try:
-        set_clauses = []
-        values = []
-        
-        for key, value in update_data.items():
-            if key not in ['id', 'meeting_id', 'speaker_id', 'created_at']:
-                set_clauses.append(f"{key} = %s")
-                values.append(value)
-        
-        if not set_clauses:
-            return False
-        
-        values.extend([datetime.utcnow(), meeting_id, speaker_id])
-        
-        query = f"""
-            UPDATE speakers 
-            SET {', '.join(set_clauses)}, updated_at = %s
-            WHERE meeting_id = %s AND speaker_id = %s
-        """
-        
-        rowcount = execute_query(query, tuple(values))
-        return rowcount > 0
-        
-    except Exception as e:
-        logger.error(f"Erreur lors de la mise à jour du locuteur {speaker_id}: {e}")
-        raise
-
-# =============================================================================
-# FONCTIONS UTILITAIRES
-# =============================================================================
-
-def normalize_transcript_format(text: str) -> str:
-    """Normaliser le format du texte de transcription"""
+def normalize_transcript_format(text):
+    """
+    Normalise le format des transcriptions pour être cohérent
+    Convertit tout format de transcription ('A: texte') 
+    vers un format standard 'Speaker A: texte'
+    """
     if not text:
-        return ""
-        
-    # Si le texte contient déjà des marqueurs de locuteurs au format 'Speaker X: ', on le laisse tel quel
-    if "Speaker " in text and ": " in text:
         return text
         
-    # Sinon, on le considère comme un texte brut d'un seul locuteur
-    return f"Speaker A: {text}"
-
-def get_user_meetings_count(user_id: str) -> int:
-    """Récupérer le nombre de réunions d'un utilisateur"""
-    try:
-        query = "SELECT COUNT(*) as count FROM meetings WHERE user_id = %s"
-        result = execute_query(query, (user_id,), fetch='one')
-        return result['count'] if result else 0
-    except Exception as e:
-        logger.error(f"Erreur lors du comptage des réunions pour l'utilisateur {user_id}: {e}")
-        return 0
-
-def get_user_stats(user_id: str) -> Dict[str, Any]:
-    """Récupérer les statistiques d'un utilisateur"""
-    try:
-        query = """
-            SELECT 
-                COUNT(*) as total_meetings,
-                COUNT(CASE WHEN transcript_status = 'completed' THEN 1 END) as completed_meetings,
-                COUNT(CASE WHEN summary_status = 'completed' THEN 1 END) as meetings_with_summary,
-                SUM(duration_seconds) as total_duration_seconds,
-                MAX(created_at) as last_meeting_date
-            FROM meetings 
-            WHERE user_id = %s
-        """
-        result = execute_query(query, (user_id,), fetch='one')
-        
-        if result:
-            return {
-                'total_meetings': result['total_meetings'] or 0,
-                'completed_meetings': result['completed_meetings'] or 0,
-                'meetings_with_summary': result['meetings_with_summary'] or 0,
-                'total_duration_seconds': result['total_duration_seconds'] or 0,
-                'last_meeting_date': result['last_meeting_date']
-            }
-        
-        return {
-            'total_meetings': 0,
-            'completed_meetings': 0,
-            'meetings_with_summary': 0,
-            'total_duration_seconds': 0,
-            'last_meeting_date': None
-        }
-        
-    except Exception as e:
-        logger.error(f"Erreur lors de la récupération des statistiques pour l'utilisateur {user_id}: {e}")
-        return {}
-
-# =============================================================================
-# COMPATIBILITY LAYER - Ancien code SQLite
-# =============================================================================
-
-# Fonctions de compatibilité pour l'ancien code qui utilisait SQLite
-def insert_meeting(*args, **kwargs):
-    """Fonction de compatibilité - utilisez create_meeting()"""
-    logger.warning("insert_meeting() est déprécié, utilisez create_meeting()")
-    return create_meeting(*args, **kwargs)
-
-def get_all_meetings(user_id: str):
-    """Fonction de compatibilité - utilisez get_meetings_by_user()"""
-    logger.warning("get_all_meetings() est déprécié, utilisez get_meetings_by_user()")
-    return get_meetings_by_user(user_id)
-
-# =============================================================================
-# FONCTIONS DE VALIDATION ET NETTOYAGE
-# =============================================================================
-
-def validate_meeting_data(meeting_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Valider et nettoyer les données d'une réunion"""
-    validated = {}
-    
-    # Champs obligatoires
-    if 'user_id' not in meeting_data:
-        raise ValueError("user_id est obligatoire")
-    
-    validated['user_id'] = str(meeting_data['user_id'])
-    validated['title'] = meeting_data.get('title', '').strip()
-    validated['file_url'] = meeting_data.get('file_url', '').strip()
-    
-    # Champs optionnels avec valeurs par défaut
-    validated['transcript_status'] = meeting_data.get('transcript_status', 'pending')
-    validated['transcript_text'] = meeting_data.get('transcript_text')
-    validated['duration_seconds'] = meeting_data.get('duration_seconds')
-    validated['speakers_count'] = meeting_data.get('speakers_count')
-    validated['summary_text'] = meeting_data.get('summary_text')
-    validated['summary_status'] = meeting_data.get('summary_status', 'not_generated')
-    
-    # Nettoyer les valeurs None
-    return {k: v for k, v in validated.items() if v is not None}
-
-def clean_transcript_text(text: str) -> str:
-    """Nettoyer le texte de transcription"""
-    if not text:
-        return ""
-    
-    # Supprimer les caractères de contrôle et normaliser les espaces
     import re
-    text = re.sub(r'\s+', ' ', text.strip())
     
-    # Supprimer les caractères non imprimables
-    text = ''.join(char for char in text if char.isprintable() or char in '\n\r\t')
+    # Pattern pour détecter "X: " au début d'une ligne qui n'est pas précédé par "Speaker "
+    pattern = r'(^|\n)(?!Speaker )([A-Z0-9]+): '
+    replacement = r'\1Speaker \2: '
     
-    return text
+    # Remplacer "X: " par "Speaker X: "
+    normalized_text = re.sub(pattern, replacement, text)
+    
+    return normalized_text
 
-def set_meeting_speaker(meeting_id: str, user_id: str, speaker_id: str, custom_name: str) -> bool:
-    """Met à jour ou crée le nom personnalisé d'un speaker dans un meeting"""
+def get_meetings_by_user(user_id, status=None):
+    """
+    Récupérer toutes les réunions d'un utilisateur
+    
+    Args:
+        user_id: ID de l'utilisateur
+        status: Filtre optionnel pour le statut de transcription
+    """
+    conn = get_db_connection()
     try:
-        # Récupérer d'abord le meeting pour s'assurer qu'il appartient à l'utilisateur
-        meeting = get_meeting(meeting_id, user_id)
-        if not meeting:
-            return False
+        cursor = conn.cursor()
+        
+        try:
+            # Si un statut est spécifié, filtrer par statut
+            if status:
+                cursor.execute(
+                    "SELECT * FROM meetings WHERE user_id = ? AND transcript_status = ? ORDER BY created_at DESC", 
+                    (user_id, status)
+                )
+            else:
+                cursor.execute(
+                    "SELECT * FROM meetings WHERE user_id = ? ORDER BY created_at DESC", 
+                    (user_id,)
+                )
+            meetings = cursor.fetchall()
             
-        # Vérifier si un mapping existe déjà pour ce speaker
-        existing_speaker = get_custom_speaker_name(meeting_id, speaker_id)
-        
-        if existing_speaker:
-            # Mettre à jour le nom existant
-            query = """
-            UPDATE speakers 
-            SET custom_name = %s, updated_at = %s
-            WHERE meeting_id = %s AND speaker_id = %s
-            """
-            result = execute_query(query, (custom_name, datetime.utcnow(), meeting_id, speaker_id), query_type="UPDATE")
-        else:
-            # Créer un nouveau mapping
-            query = """
-            INSERT INTO speakers (meeting_id, speaker_id, custom_name, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s)
-            """
-            result = execute_query(query, (meeting_id, speaker_id, custom_name, datetime.utcnow(), datetime.utcnow()), query_type="INSERT")
-        
-        return result is not None
-        
-    except Exception as e:
-        logger.error(f"Erreur lors de la mise à jour du speaker: {e}")
-        return False
+            # Convertir les résultats en dictionnaires et renommer transcript_status en transcription_status
+            result = []
+            for m in meetings:
+                meeting_dict = dict(m)
+                meeting_dict['transcription_status'] = meeting_dict.get('transcript_status', 'pending')
+                
+                # Normaliser le format de la transcription si présent dans les résultats
+                if 'transcript_text' in meeting_dict and meeting_dict['transcript_text']:
+                    meeting_dict['transcript_text'] = normalize_transcript_format(meeting_dict['transcript_text'])
+                
+                result.append(meeting_dict)
+            
+            return result
+        except Exception as e:
+            logger = logging.getLogger("fastapi")
+            logger.error(f"Error fetching meetings: {str(e)}")
+            return []
+    finally:
+        release_db_connection(conn)
 
-def delete_meeting_speaker(meeting_id: str, speaker_id: str, user_id: str = None) -> bool:
-    """Supprime un mapping de nom personnalisé pour un speaker"""
+def update_meeting(meeting_id: str, user_id: str, update_data: dict):
+    """Mettre à jour une réunion"""
+    logger = logging.getLogger("fastapi")
+    
+    # Définir une connexion comme None pour éviter des erreurs dans le bloc finally
+    conn = None
+    
     try:
-        # Récupérer d'abord le meeting pour s'assurer qu'il appartient à l'utilisateur
-        if user_id:
-            meeting = get_meeting(meeting_id, user_id)
-            if not meeting:
+        # Log des données à mettre à jour
+        logger.info(f"Début de mise à jour pour {meeting_id} avec data: {update_data}")
+        
+        # Normaliser le format du texte de transcription s'il est présent
+        if 'transcript_text' in update_data and update_data['transcript_text']:
+            update_data['transcript_text'] = normalize_transcript_format(update_data['transcript_text'])
+        
+        # Log des valeurs spécifiques pour le debugging
+        if 'duration_seconds' in update_data:
+            logger.info(f"DEBUG: Mise à jour duration_seconds = {update_data['duration_seconds']} (type: {type(update_data['duration_seconds'])})")
+        if 'speakers_count' in update_data:
+            logger.info(f"DEBUG: Mise à jour speakers_count = {update_data['speakers_count']} (type: {type(update_data['speakers_count'])})")
+        
+        # Construire la requête de mise à jour
+        query = "UPDATE meetings SET "
+        values = []
+        params = []
+        for key, value in update_data.items():
+            query += f"{key} = ?, "
+            values.append(value)
+            logger.info(f"Ajout de paramètre: {key}={value} (type: {type(value)}, value_repr: {repr(value)})")
+        
+        # Supprimer la dernière virgule et ajouter la condition WHERE
+        query = query.rstrip(", ") + " WHERE id = ? AND user_id = ?"
+        values.extend([meeting_id, user_id])
+        
+        logger.info(f"Requête SQL: {query}")
+        logger.info(f"Valeurs: {values}")
+        
+        # Exécuter la requête - Créer une nouvelle connexion à chaque appel
+        # pour éviter les problèmes de thread avec SQLite
+        try:
+            # Créer une nouvelle connexion dans le thread actuel
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(query, values)
+            conn.commit()
+            
+            # Log de la mise à jour
+            logger.info(f"DB Update: Meeting {meeting_id} updated with data: {update_data}")
+            
+            # Vérifier si la mise à jour a été effectuée
+            if cursor.rowcount == 0:
+                logger.warning(f"DB Warning: No rows updated for meeting {meeting_id}")
+                # Vérifier si la réunion existe
+                cursor.execute("SELECT COUNT(*) FROM meetings WHERE id = ? AND user_id = ?", (meeting_id, user_id))
+                count = cursor.fetchone()[0]
+                
+                if count == 0:
+                    logger.error(f"DB Error: Meeting {meeting_id} does not exist for user {user_id}")
+                else:
+                    logger.warning(f"DB Warning: Meeting exists but no update was necessary")
+                
                 return False
-        
-        # Supprimer le mapping du speaker
-        query = """
-        DELETE FROM speakers 
-        WHERE meeting_id = %s AND speaker_id = %s
-        """
-        
-        result = execute_query(query, (meeting_id, speaker_id), query_type="DELETE")
-        return result is not None and result > 0
-        
+                
+            return True
+        except sqlite3.Error as e:
+            logger.error(f"DB Error: Failed to update meeting {meeting_id}: {str(e)}")
+            logger.error(f"Traceback (most recent call last):")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
     except Exception as e:
-        logger.error(f"Erreur lors de la suppression du speaker: {e}")
+        logger.error(f"DB Error: Failed to update meeting {meeting_id}: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return False
+    finally:
+        if conn:
+            release_db_connection(conn)
 
-def get_custom_speaker_name(meeting_id: str, speaker_id: str) -> Optional[Dict[str, Any]]:
-    """Récupère le nom personnalisé d'un speaker spécifique"""
+def delete_meeting(meeting_id, user_id):
+    """Supprimer une réunion"""
+    conn = get_db_connection()
     try:
-        query = """
-        SELECT * FROM speakers 
-        WHERE meeting_id = %s AND speaker_id = %s
-        """
+        cursor = conn.cursor()
         
-        result = execute_query(query, (meeting_id, speaker_id), fetch='one')
+        # Récupérer l'URL du fichier avant de supprimer
+        cursor.execute(
+            "SELECT file_url FROM meetings WHERE id = ? AND user_id = ?", 
+            (meeting_id, user_id)
+        )
+        meeting = cursor.fetchone()
         
-        if result:
-            return {
-                'id': str(result['id']),
-                'meeting_id': str(result['meeting_id']),
-                'speaker_id': result['speaker_id'],
-                'custom_name': result['custom_name'],
-                'confidence': result.get('confidence', 0.0),
-                'created_at': result['created_at'].isoformat() if result.get('created_at') else None,
-                'updated_at': result['updated_at'].isoformat() if result.get('updated_at') else None
-            }
+        if not meeting:
+            return None
         
-        return None
+        file_url = meeting["file_url"]
         
+        # Supprimer la réunion
+        cursor.execute(
+            "DELETE FROM meetings WHERE id = ? AND user_id = ?", 
+            (meeting_id, user_id)
+        )
+        
+        conn.commit()
+        
+        return file_url
+    finally:
+        release_db_connection(conn)
+
+def get_pending_transcriptions(max_age_hours=24):
+    """Récupère les transcriptions en attente qui ne sont pas trop anciennes"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT * FROM meetings 
+            WHERE transcript_status = 'pending' 
+            AND created_at > datetime('now', ? || ' hours')
+            """,
+            (f"-{max_age_hours}",)
+        )
+        meetings = cursor.fetchall()
+        return [dict(m) for m in meetings]
+    finally:
+        release_db_connection(conn)
+
+def get_meetings_by_status(status, max_age_hours=72):
+    """Récupère les réunions avec un statut spécifique qui ne sont pas trop anciennes"""
+    logger = logging.getLogger("fastapi")
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Log pour le debugging
+        logger.info(f"DB Query: Getting meetings with status: {status}, max age: {max_age_hours} hours")
+        
+        cursor.execute(
+            """
+            SELECT * FROM meetings 
+            WHERE transcript_status = ? 
+            AND created_at > datetime('now', ? || ' hours')
+            """,
+            (status, f"-{max_age_hours}")
+        )
+        meetings = cursor.fetchall()
+        
+        # Convertir en dictionnaires
+        result = [dict(m) for m in meetings]
+        logger.info(f"Found {len(result)} meetings with status '{status}'")
+        
+        return result
     except Exception as e:
-        logger.error(f"Erreur lors de la récupération du nom personnalisé du speaker: {e}")
+        logger.error(f"Error fetching meetings with status '{status}': {str(e)}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+def get_meetings_by_status(status, max_age_hours=72):
+    """
+    Récupère les réunions avec un statut spécifique qui ne sont pas trop anciennes
+    """
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Calculer la date de début pour le filtrage (maintenant - max_age_hours)
+        max_age_date = (datetime.utcnow().replace(microsecond=0) - 
+                       timedelta(hours=max_age_hours)).isoformat()
+        
+        # Récupérer toutes les réunions correspondant au statut et pas trop anciennes
+        cursor.execute(
+            """SELECT * FROM meetings 
+               WHERE transcript_status = ? 
+               AND created_at > ?
+               ORDER BY created_at DESC""", 
+            (status, max_age_date)
+        )
+        
+        meetings = cursor.fetchall()
+        
+        if meetings:
+            # Convertir les résultats en liste de dictionnaires
+            return [dict(meeting) for meeting in meetings]
+        return []
+    
+    except sqlite3.Error as e:
+        logging.error(f"Erreur SQLite lors de la récupération des réunions par statut: {str(e)}")
+        return []
+    finally:
+        release_db_connection(conn)
+
+
+def get_meeting_speakers(meeting_id, user_id):
+    """Récupère tous les noms personnalisés des locuteurs pour une réunion spécifique"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Vérifier d'abord que la réunion appartient à l'utilisateur
+        cursor.execute(
+            "SELECT id FROM meetings WHERE id = ? AND user_id = ?",
+            (meeting_id, user_id)
+        )
+        if not cursor.fetchone():
+            return None
+        
+        # Récupérer les noms personnalisés des locuteurs
+        cursor.execute(
+            "SELECT * FROM meeting_speakers WHERE meeting_id = ? ORDER BY speaker_id",
+            (meeting_id,)
+        )
+        
+        speakers = cursor.fetchall()
+        if speakers:
+            return [dict(speaker) for speaker in speakers]
+        return []
+    
+    except sqlite3.Error as e:
+        logging.error(f"Erreur lors de la récupération des locuteurs personnalisés: {str(e)}")
         return None
+    finally:
+        release_db_connection(conn)
 
-# =============================================================================
-# EXPORT DU MODULE
-# =============================================================================
 
-__all__ = [
-    'create_meeting',
-    'get_meeting', 
-    'update_meeting',
-    'get_meetings_by_user',
-    'get_meetings_by_status',
-    'get_pending_transcriptions',
-    'delete_meeting',
-    'get_meeting_speakers',
-    'create_speaker',
-    'update_speaker',
-    'set_meeting_speaker',
-    'delete_meeting_speaker',
-    'get_custom_speaker_name',
-    'normalize_transcript_format',
-    'get_user_meetings_count',
-    'get_user_stats',
-    'validate_meeting_data',
-    'clean_transcript_text'
-]
+def set_meeting_speaker(meeting_id, user_id, speaker_id, custom_name):
+    """Définit ou met à jour un nom personnalisé pour un locuteur dans une réunion"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Vérifier d'abord que la réunion appartient à l'utilisateur
+        cursor.execute(
+            "SELECT id FROM meetings WHERE id = ? AND user_id = ?",
+            (meeting_id, user_id)
+        )
+        if not cursor.fetchone():
+            return False
+        
+        # Vérifier si une entrée existe déjà pour ce locuteur dans cette réunion
+        cursor.execute(
+            "SELECT id FROM meeting_speakers WHERE meeting_id = ? AND speaker_id = ?",
+            (meeting_id, speaker_id)
+        )
+        existing_entry = cursor.fetchone()
+        
+        if existing_entry:
+            # Mettre à jour l'entrée existante
+            cursor.execute(
+                "UPDATE meeting_speakers SET custom_name = ? WHERE id = ?",
+                (custom_name, existing_entry["id"])
+            )
+        else:
+            # Créer une nouvelle entrée
+            speaker_mapping_id = str(uuid.uuid4())
+            cursor.execute(
+                "INSERT INTO meeting_speakers (id, meeting_id, speaker_id, custom_name) VALUES (?, ?, ?, ?)",
+                (speaker_mapping_id, meeting_id, speaker_id, custom_name)
+            )
+        
+        conn.commit()
+        return True
+    
+    except sqlite3.Error as e:
+        logging.error(f"Erreur lors de la définition du nom personnalisé du locuteur: {str(e)}")
+        conn.rollback()
+        return False
+    finally:
+        release_db_connection(conn)
+
+
+def delete_meeting_speaker(meeting_id, user_id, speaker_id):
+    """Supprime un nom personnalisé de locuteur pour une réunion"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Vérifier d'abord que la réunion appartient à l'utilisateur
+        cursor.execute(
+            "SELECT id FROM meetings WHERE id = ? AND user_id = ?",
+            (meeting_id, user_id)
+        )
+        if not cursor.fetchone():
+            return False
+        
+        # Supprimer l'entrée de locuteur personnalisé
+        cursor.execute(
+            "DELETE FROM meeting_speakers WHERE meeting_id = ? AND speaker_id = ?",
+            (meeting_id, speaker_id)
+        )
+        
+        conn.commit()
+        return True
+    
+    except sqlite3.Error as e:
+        logging.error(f"Erreur lors de la suppression du nom personnalisé du locuteur: {str(e)}")
+        conn.rollback()
+        return False
+    finally:
+        release_db_connection(conn)
+
+
+def get_custom_speaker_name(meeting_id, speaker_id):
+    """Récupère le nom personnalisé d'un locuteur spécifique pour une réunion"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT custom_name FROM meeting_speakers WHERE meeting_id = ? AND speaker_id = ?",
+            (meeting_id, speaker_id)
+        )
+        
+        result = cursor.fetchone()
+        return result["custom_name"] if result else None
+    
+    except sqlite3.Error as e:
+        logging.error(f"Erreur lors de la récupération du nom personnalisé du locuteur: {str(e)}")
+        return None
+    finally:
+        release_db_connection(conn)

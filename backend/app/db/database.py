@@ -1,413 +1,401 @@
-"""
-Module de gestion de base de données PostgreSQL unifié pour Gilbert
-Remplace l'ancien système SQLite et unifie les connexions PostgreSQL
-"""
-
-import psycopg2
-import psycopg2.extras
-import psycopg2.pool
+import sqlite3
 import os
+from pathlib import Path
+import bcrypt
+import uuid
 from datetime import datetime
-import logging
-from typing import Optional, Dict, Any, List
-import json
 import threading
 import time
-from contextlib import contextmanager
 
-# Configuration du logging
-logger = logging.getLogger(__name__)
+# Chemin de la base de données
+# Utiliser le disque persistant Render si disponible, sinon utiliser le chemin par défaut
+# Utilisation de /data comme chemin vers le disque persistant monté sur Render
+RENDER_DISK_PATH = os.environ.get("RENDER_DISK_PATH", "/data")
+DB_PATH = Path(RENDER_DISK_PATH) / "app.db" if os.path.exists(RENDER_DISK_PATH) else Path(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))) / "app.db"
 
-# Configuration PostgreSQL avec fallback
-DATABASE_URL = os.getenv(
-    "DATABASE_URL", 
-    "postgresql://gilbert_user:gilbertmdp2025@postgres:5432/gilbert_db"
-)
-
-# Pool de connexions global
-_connection_pool = None
-_pool_lock = threading.Lock()
-
-class DatabaseError(Exception):
-    """Exception personnalisée pour les erreurs de base de données"""
-    pass
-
-def initialize_connection_pool(min_conn=1, max_conn=20):
-    """Initialise le pool de connexions PostgreSQL"""
-    global _connection_pool
-    
-    if _connection_pool is not None:
-        return _connection_pool
+# Gestionnaire de connexions par thread pour SQLite
+class ThreadLocalConnectionManager:
+    def __init__(self, db_path):
+        self.db_path = db_path
+        self.local = threading.local()
         
-    try:
-        with _pool_lock:
-            if _connection_pool is None:
-                logger.info(f"Initialisation du pool de connexions PostgreSQL (min={min_conn}, max={max_conn})")
-                _connection_pool = psycopg2.pool.ThreadedConnectionPool(
-                    min_conn, max_conn, DATABASE_URL
-                )
-                logger.info("Pool de connexions PostgreSQL initialisé avec succès")
-        return _connection_pool
-    except Exception as e:
-        logger.error(f"Erreur lors de l'initialisation du pool de connexions: {e}")
-        raise DatabaseError(f"Impossible d'initialiser le pool de connexions: {e}")
-
-def get_db_connection():
-    """
-    Obtenir une connexion PostgreSQL depuis le pool
-    Utilise le pool si disponible, sinon crée une connexion directe
-    """
-    global _connection_pool
+    def get_connection(self):
+        # Vérifier si ce thread a déjà une connexion
+        if not hasattr(self.local, 'connection'):
+            # Créer une nouvelle connexion pour ce thread avec un timeout plus long
+            # et une configuration pour améliorer la gestion des verrous
+            self.local.connection = sqlite3.connect(
+                str(self.db_path),
+                timeout=60.0,  # Attendre jusqu'à 60 secondes pour les verrous
+                isolation_level='IMMEDIATE'  # Réduire les conflits de verrous
+            )
+            self.local.connection.row_factory = sqlite3.Row
+            
+            # Configuration pour améliorer la performance et la stabilité
+            self.local.connection.execute('PRAGMA journal_mode = WAL')  # Write-Ahead Logging pour de meilleures performances
+            self.local.connection.execute('PRAGMA synchronous = NORMAL')  # Bon équilibre entre performance et sécurité
+            self.local.connection.execute('PRAGMA busy_timeout = 30000')  # Attendre 30 secondes si la BD est occupée
+            
+        return self.local.connection
     
-    # Initialiser le pool si nécessaire
-    if _connection_pool is None:
-        initialize_connection_pool()
+    def release_connection(self, conn):
+        # Ne rien faire - la connexion reste attachée au thread
+        pass
     
-    try:
-        if _connection_pool:
-            conn = _connection_pool.getconn()
-            if conn:
-                # Vérifier si la connexion est toujours valide
-                if conn.closed:
-                    logger.warning("Connexion fermée détectée, création d'une nouvelle connexion")
-                    _connection_pool.putconn(conn, close=True)
-                    conn = _connection_pool.getconn()
-                return conn
-    except Exception as e:
-        logger.warning(f"Erreur avec le pool de connexions, connexion directe: {e}")
-    
-    # Fallback : connexion directe
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        logger.debug("Connexion directe PostgreSQL établie")
-        return conn
-    except Exception as e:
-        logger.error(f"Erreur de connexion PostgreSQL: {e}")
-        raise DatabaseError(f"Impossible de se connecter à PostgreSQL: {e}")
-
-def release_db_connection(conn, close=False):
-    """
-    Libère une connexion dans le pool ou la ferme
-    """
-    global _connection_pool
-    
-    if not conn:
-        return
+    def close_all(self):
+        # Cette méthode n'est pas vraiment utilisée, mais on la garde pour compatibilité
+        pass
         
-    try:
-        if _connection_pool and not close and not conn.closed:
-            _connection_pool.putconn(conn)
-            logger.debug("Connexion retournée au pool")
-        else:
-            conn.close()
-            logger.debug("Connexion fermée directement")
-    except Exception as e:
-        logger.error(f"Erreur lors de la libération de la connexion: {e}")
-        try:
-            conn.close()
-        except:
-            pass
-
-def reset_db_pool():
-    """Réinitialise le pool de connexions en cas de problème"""
-    global _connection_pool
-    
-    with _pool_lock:
-        if _connection_pool:
+    def close_thread_connection(self):
+        # Fermer la connexion du thread actuel si elle existe
+        if hasattr(self.local, 'connection'):
             try:
-                _connection_pool.closeall()
-                logger.info("Pool de connexions fermé")
+                self.local.connection.close()
             except Exception as e:
-                logger.error(f"Erreur lors de la fermeture du pool: {e}")
+                print(f"Erreur lors de la fermeture de la connexion: {e}")
             finally:
-                _connection_pool = None
-        
-        # Réinitialiser le pool
-        try:
-            initialize_connection_pool()
-            logger.info("Pool de connexions réinitialisé")
-        except Exception as e:
-            logger.error(f"Erreur lors de la réinitialisation du pool: {e}")
+                del self.local.connection
 
-@contextmanager
-def get_db_cursor(dict_cursor=True):
-    """
-    Context manager pour obtenir un curseur de base de données
-    Gère automatiquement la connexion et la libération des ressources
-    """
-    conn = None
-    cursor = None
-    try:
-        conn = get_db_connection()
-        if dict_cursor:
-            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        else:
-            cursor = conn.cursor()
-        yield cursor, conn
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        logger.error(f"Erreur dans la transaction de base de données: {e}")
-        raise
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            release_db_connection(conn)
-
-# =============================================================================
-# FONCTIONS UTILITAIRES DE BASE DE DONNÉES
-# =============================================================================
-
-def execute_query(query: str, params: tuple = None, fetch=False, dict_cursor=True) -> Any:
-    """
-    Exécute une requête SQL et retourne le résultat
-    """
-    with get_db_cursor(dict_cursor=dict_cursor) as (cursor, conn):
-        cursor.execute(query, params or ())
-        
-        if fetch == 'one':
-            result = cursor.fetchone()
-            return dict(result) if result and dict_cursor else result
-        elif fetch == 'all':
-            results = cursor.fetchall()
-            return [dict(r) for r in results] if results and dict_cursor else results
-        elif fetch:
-            return cursor.fetchall()
-        else:
-            conn.commit()
-            return cursor.rowcount
-
-def check_table_exists(table_name: str) -> bool:
-    """Vérifie si une table existe"""
-    try:
-        query = """
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE table_schema = 'public' 
-                AND table_name = %s
-            );
-        """
-        result = execute_query(query, (table_name,), fetch='one', dict_cursor=False)
-        return result[0] if result else False
-    except Exception as e:
-        logger.error(f"Erreur lors de la vérification de l'existence de la table {table_name}: {e}")
-        return False
-
-def get_table_schema(table_name: str) -> List[Dict]:
-    """Récupère le schéma d'une table"""
-    try:
-        query = """
-            SELECT column_name, data_type, is_nullable, column_default
-            FROM information_schema.columns
-            WHERE table_schema = 'public' AND table_name = %s
-            ORDER BY ordinal_position;
-        """
-        return execute_query(query, (table_name,), fetch='all')
-    except Exception as e:
-        logger.error(f"Erreur lors de la récupération du schéma de la table {table_name}: {e}")
-        return []
-
-# =============================================================================
-# FONCTIONS SPÉCIFIQUES AUX UTILISATEURS
-# =============================================================================
-
-def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
-    """Récupérer un utilisateur par email"""
-    try:
-        query = "SELECT * FROM users WHERE email = %s"
-        result = execute_query(query, (email,), fetch='one')
-        
-        if result:
-            # Normaliser les champs pour compatibilité
-            if 'first_name' in result and 'last_name' in result:
-                result['full_name'] = f"{result['first_name']} {result['last_name']}".strip()
-            
-            # Convertir l'ID en string pour compatibilité
-            result['id'] = str(result['id'])
-            
-            return result
-        return None
-    except Exception as e:
-        logger.error(f"Erreur lors de la récupération de l'utilisateur par email {email}: {e}")
-        raise DatabaseError(f"Erreur lors de la récupération de l'utilisateur: {e}")
-
-def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
-    """Récupérer un utilisateur par ID"""
-    try:
-        query = "SELECT * FROM users WHERE id = %s"
-        result = execute_query(query, (user_id,), fetch='one')
-        
-        if result:
-            # Normaliser les champs pour compatibilité
-            if 'first_name' in result and 'last_name' in result:
-                result['full_name'] = f"{result['first_name']} {result['last_name']}".strip()
-            
-            # Convertir l'ID en string pour compatibilité
-            result['id'] = str(result['id'])
-            
-            return result
-        return None
-    except Exception as e:
-        logger.error(f"Erreur lors de la récupération de l'utilisateur par ID {user_id}: {e}")
-        raise DatabaseError(f"Erreur lors de la récupération de l'utilisateur: {e}")
-
-def create_user(user_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Créer un nouvel utilisateur"""
-    try:
-        # Extraire le nom complet
-        full_name = user_data.get("full_name", "")
-        first_name = ""
-        last_name = ""
-        
-        if full_name:
-            name_parts = full_name.split(" ", 1)
-            first_name = name_parts[0]
-            last_name = name_parts[1] if len(name_parts) > 1 else ""
-        
-        query = """
-            INSERT INTO users (email, password_hash, first_name, last_name, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            RETURNING id, email, first_name, last_name, created_at
-        """
-        params = (
-            user_data["email"],
-            user_data["hashed_password"],
-            first_name,
-            last_name,
-            datetime.utcnow(),
-            datetime.utcnow()
-        )
-        
-        result = execute_query(query, params, fetch='one')
-        
-        if result:
-            # Normaliser pour compatibilité
-            result['full_name'] = f"{result['first_name']} {result['last_name']}".strip()
-            result['id'] = str(result['id'])
-            if result['created_at']:
-                result['created_at'] = result['created_at'].isoformat()
-            return result
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"Erreur lors de la création de l'utilisateur: {e}")
-        raise DatabaseError(f"Erreur lors de la création de l'utilisateur: {e}")
-
-def update_user(user_id: str, update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Mettre à jour un utilisateur"""
-    try:
-        # Construire la requête de mise à jour
-        set_clauses = []
-        values = []
-        
-        # Gérer le nom complet
-        if 'full_name' in update_data:
-            full_name = update_data['full_name']
-            name_parts = full_name.split(" ", 1) if full_name else ["", ""]
-            update_data['first_name'] = name_parts[0]
-            update_data['last_name'] = name_parts[1] if len(name_parts) > 1 else ""
-            del update_data['full_name']
-        
-        for key, value in update_data.items():
-            if key not in ['id', 'created_at']:  # Éviter de modifier les champs immutables
-                set_clauses.append(f"{key} = %s")
-                values.append(value)
-        
-        if not set_clauses:
-            return get_user_by_id(user_id)
-        
-        values.extend([datetime.utcnow(), user_id])
-        
-        query = f"""
-            UPDATE users 
-            SET {', '.join(set_clauses)}, updated_at = %s
-            WHERE id = %s
-            RETURNING *
-        """
-        
-        result = execute_query(query, tuple(values), fetch='one')
-        
-        if result:
-            # Normaliser pour compatibilité
-            if 'first_name' in result and 'last_name' in result:
-                result['full_name'] = f"{result['first_name']} {result['last_name']}".strip()
-            result['id'] = str(result['id'])
-            return result
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"Erreur lors de la mise à jour de l'utilisateur {user_id}: {e}")
-        raise DatabaseError(f"Erreur lors de la mise à jour de l'utilisateur: {e}")
-
-# =============================================================================
-# FONCTIONS DE GESTION DES MOTS DE PASSE
-# =============================================================================
-
-import bcrypt
+# Créer un gestionnaire de connexions par thread global
+db_pool = ThreadLocalConnectionManager(DB_PATH)
 
 def get_password_hash(password: str) -> str:
     """Hash a password using bcrypt"""
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(password.encode(), salt).decode()
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a password against its hash"""
-    try:
-        return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
-    except Exception:
-        return False
+def get_db_connection():
+    """Obtenir une connexion depuis le pool"""
+    return db_pool.get_connection()
 
-# =============================================================================
-# INITIALISATION ET TESTS
-# =============================================================================
+def release_db_connection(conn):
+    """Libérer une connexion pour la réutiliser"""
+    db_pool.release_connection(conn)
 
-def test_connection():
-    """Teste la connexion à la base de données"""
+def reset_db_pool():
+    """Réinitialiser le gestionnaire de connexions en cas de problème"""
+    global db_pool
+    db_pool.close_all()
+    db_pool = ThreadLocalConnectionManager(DB_PATH)
+    return True
+
+def init_db():
+    """Initialiser la base de données avec les tables nécessaires"""
+    conn = None
     try:
-        with get_db_cursor() as (cursor, conn):
-            cursor.execute("SELECT 1")
-            result = cursor.fetchone()
-            logger.info("Test de connexion PostgreSQL réussi")
-            return True
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Vérifier si le chemin de la base de données est sur le disque persistant Render
+        is_render_disk = os.path.exists(RENDER_DISK_PATH) and str(DB_PATH).startswith(RENDER_DISK_PATH)
+        if is_render_disk:
+            print(f"Base de données sur disque persistant Render: {DB_PATH}")
+        else:
+            print(f"Base de données locale: {DB_PATH}")
+        
+        # Vérifier si les tables existent déjà
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+        users_table_exists = cursor.fetchone() is not None
+        
+        if not users_table_exists:
+            cursor.execute("""
+            CREATE TABLE users (
+                id TEXT PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                hashed_password TEXT,
+                full_name TEXT,
+                profile_picture_url TEXT,
+                oauth_provider TEXT,
+                oauth_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """)
+            cursor.execute("CREATE INDEX idx_user_email ON users(email)")
+            cursor.execute("CREATE INDEX idx_user_oauth ON users(oauth_provider, oauth_id)")
+            
+        else:
+            # Vérifier les colonnes existantes
+            cursor.execute("PRAGMA table_info(users)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            if 'profile_picture_url' not in columns:
+                cursor.execute("ALTER TABLE users ADD COLUMN profile_picture_url TEXT")
+                print("Colonne profile_picture_url ajoutée à la table users")
+                
+            if 'oauth_provider' not in columns:
+                cursor.execute("ALTER TABLE users ADD COLUMN oauth_provider TEXT")
+                print("Colonne oauth_provider ajoutée à la table users")
+                
+            if 'oauth_id' not in columns:
+                cursor.execute("ALTER TABLE users ADD COLUMN oauth_id TEXT")
+                print("Colonne oauth_id ajoutée à la table users")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_oauth ON users(oauth_provider, oauth_id)")
+                
+            # Modifier la colonne hashed_password pour qu'elle soit nullable (pour les utilisateurs OAuth)
+            # SQLite ne supporte pas ALTER COLUMN, on doit recréer la table si nécessaire
+            cursor.execute("PRAGMA table_info(users)")
+            columns_info = cursor.fetchall()
+            hashed_password_nullable = False
+            for col in columns_info:
+                if col[1] == 'hashed_password' and col[3] == 0:  # col[3] est notnull (0 = nullable, 1 = not null)
+                    hashed_password_nullable = True
+                    break
+            
+            if not hashed_password_nullable:
+                print("La colonne hashed_password doit être rendue nullable pour les utilisateurs OAuth")
+                print("Veuillez exécuter une migration si nécessaire")
+        
+        # Création de la table meetings
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS meetings (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                file_url TEXT NOT NULL,
+                transcript_text TEXT,
+                transcript_status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                duration_seconds INTEGER,
+                speakers_count INTEGER,
+                summary_text TEXT,
+                summary_status TEXT DEFAULT NULL,
+                FOREIGN KEY (user_id) REFERENCES users (id)
+            )
+        ''')
+        
+        # Vérifier si les colonnes summary_text et summary_status existent déjà
+        cursor.execute("PRAGMA table_info(meetings)")
+        columns = [column[1] for column in cursor.fetchall()]
+        
+        # Ajouter les colonnes manquantes si nécessaire
+        if 'summary_text' not in columns:
+            cursor.execute("ALTER TABLE meetings ADD COLUMN summary_text TEXT")
+            print("Colonne summary_text ajoutée à la table meetings")
+            
+        if 'summary_status' not in columns:
+            cursor.execute("ALTER TABLE meetings ADD COLUMN summary_status TEXT DEFAULT NULL")
+            print("Colonne summary_status ajoutée à la table meetings")
+        
+        # Création d'index pour améliorer les performances
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_meeting_user ON meetings(user_id)')
+        
+        # Vérifier si la colonne client_id existe déjà dans meetings
+        cursor.execute("PRAGMA table_info(meetings)")
+        columns = [column[1] for column in cursor.fetchall()]
+        
+        # Ajouter la colonne client_id si elle n'existe pas
+        if 'client_id' not in columns:
+            cursor.execute("ALTER TABLE meetings ADD COLUMN client_id TEXT")
+            print("Colonne client_id ajoutée à la table meetings")
+            
+        # Création de la table clients
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS clients (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                summary_template TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (id)
+            )
+        ''')
+        
+        # Création d'index pour la table clients
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_client_user ON clients(user_id)')
+        
+        # Création de la table meeting_speakers pour les noms personnalisés des locuteurs
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS meeting_speakers (
+                id TEXT PRIMARY KEY,
+                meeting_id TEXT NOT NULL,
+                speaker_id TEXT NOT NULL,
+                custom_name TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (meeting_id) REFERENCES meetings (id) ON DELETE CASCADE,
+                UNIQUE(meeting_id, speaker_id)
+            )
+        ''')
+        
+        # Création d'index pour la table meeting_speakers
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_speaker_meeting ON meeting_speakers(meeting_id)')
+        
+        conn.commit()
+        print("Database initialized successfully")
+    finally:
+        if conn:
+            release_db_connection(conn)
+
+def create_user(user_data):
+    """Créer un nouvel utilisateur (classique ou OAuth)"""
+    user_id = str(uuid.uuid4())
+    email = user_data.get("email")
+    hashed_password = user_data.get("hashed_password")  # Peut être None pour OAuth
+    full_name = user_data.get("full_name")
+    profile_picture_url = user_data.get("profile_picture_url")
+    oauth_provider = user_data.get("oauth_provider")
+    oauth_id = user_data.get("oauth_id")
+    created_at = datetime.utcnow().isoformat()
+    
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO users (id, email, hashed_password, full_name, profile_picture_url, 
+               oauth_provider, oauth_id, created_at) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (user_id, email, hashed_password, full_name, profile_picture_url, 
+             oauth_provider, oauth_id, created_at)
+        )
+        conn.commit()
+        
+        return {
+            "id": user_id,
+            "email": email,
+            "full_name": full_name,
+            "profile_picture_url": profile_picture_url,
+            "oauth_provider": oauth_provider,
+            "oauth_id": oauth_id,
+            "created_at": created_at
+        }
+    finally:
+        release_db_connection(conn)
+
+def get_user_by_email(email):
+    """Récupérer un utilisateur par son email"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT * FROM users WHERE email = ?", (email,))
+        user = cursor.fetchone()
+        
+        if user:
+            return dict(user)
+        return None
+    finally:
+        release_db_connection(conn)
+
+def get_user_by_id(user_id):
+    """Récupérer un utilisateur par son ID"""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        user = cursor.fetchone()
+        
+        if user:
+            return dict(user)
+        return None
+    finally:
+        release_db_connection(conn)
+
+def update_user(user_id, update_data):
+    """Mettre à jour les informations d'un utilisateur"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Construire la requête de mise à jour dynamiquement
+        placeholders = ", ".join([f"{k} = ?" for k in update_data.keys()])
+        values = list(update_data.values())
+        
+        query = f"UPDATE users SET {placeholders} WHERE id = ?"
+        cursor.execute(query, (*values, user_id))
+        conn.commit()
+        
+        # Vider le cache pour cet utilisateur
+        cache_key = f"user_id_{user_id}"
+        if cache_key in user_cache:
+            del user_cache[cache_key]
+        
+        # Récupérer l'utilisateur mis à jour
+        return get_user_by_id(user_id)
     except Exception as e:
-        logger.error(f"Test de connexion PostgreSQL échoué: {e}")
-        return False
+        print(f"Erreur lors de la mise à jour de l'utilisateur: {e}")
+        if conn:
+            conn.rollback()
+        return None
+    finally:
+        if conn:
+            release_db_connection(conn)
 
-def initialize_database():
-    """Initialise la base de données et vérifie les tables"""
-    try:
-        # Tester la connexion
-        if not test_connection():
-            raise DatabaseError("Impossible de se connecter à la base de données")
-        
-        # Vérifier les tables principales
-        required_tables = ['users', 'meetings']
-        missing_tables = []
-        
-        for table in required_tables:
-            if not check_table_exists(table):
-                missing_tables.append(table)
-        
-        if missing_tables:
-            logger.warning(f"Tables manquantes détectées: {missing_tables}")
-            logger.info("Exécutez le script d'initialisation SQL pour créer les tables manquantes")
-        
-        # Initialiser le pool
-        initialize_connection_pool()
-        
-        logger.info("Base de données Gilbert initialisée avec succès")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Erreur lors de l'initialisation de la base de données: {e}")
-        raise DatabaseError(f"Erreur lors de l'initialisation: {e}")
+# Cache utilisateur (pour limiter les requêtes à la base de données)
+user_cache = {}
 
-# Initialisation automatique
-if __name__ != "__main__":
+# Fonctions avec cache pour les utilisateurs
+def get_user_by_email_cached(email, max_age_seconds=60):
+    """Version mise en cache de get_user_by_email"""
+    current_time = time.time()
+    cache_key = f"email:{email}"
+    
+    # Vérifier si l'utilisateur est dans le cache et si le cache est encore valide
+    if cache_key in user_cache:
+        timestamp, user = user_cache[cache_key]
+        if current_time - timestamp < max_age_seconds:
+            return user
+    
+    # Si pas dans le cache ou expiré, interroger la base de données
+    user = get_user_by_email(email)
+    
+    # Mettre en cache si l'utilisateur existe
+    if user:
+        user_cache[cache_key] = (current_time, user)
+    
+    return user
+
+def get_user_by_id_cached(user_id, max_age_seconds=300):
+    """Version mise en cache de get_user_by_id"""
+    current_time = time.time()
+    cache_key = f"id:{user_id}"
+    
+    # Vérifier si l'utilisateur est dans le cache et si le cache est encore valide
+    if cache_key in user_cache:
+        timestamp, user = user_cache[cache_key]
+        if current_time - timestamp < max_age_seconds:
+            return user
+    
+    # Si pas dans le cache ou expiré, interroger la base de données
+    user = get_user_by_id(user_id)
+    
+    # Mettre en cache si l'utilisateur existe
+    if user:
+        user_cache[cache_key] = (current_time, user)
+    
+    return user
+
+def clear_user_cache():
+    """Vider le cache utilisateur"""
+    global user_cache
+    user_cache = {}
+
+def purge_old_entries_from_cache(max_age_seconds=600):
+    """Purger les entrées de cache trop anciennes"""
+    global user_cache
+    current_time = time.time()
+    
+    user_cache = {
+        k: v for k, v in user_cache.items() 
+        if current_time - v[0] < max_age_seconds
+    }
+
+def get_user_by_oauth(oauth_provider, oauth_id):
+    """Récupérer un utilisateur par ses identifiants OAuth"""
+    conn = get_db_connection()
     try:
-        initialize_database()
-    except Exception as e:
-        logger.warning(f"Initialisation automatique échouée: {e}")
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM users WHERE oauth_provider = ? AND oauth_id = ?", 
+            (oauth_provider, oauth_id)
+        )
+        user = cursor.fetchone()
+        
+        if user:
+            return dict(user)
+        return None
+    finally:
+        release_db_connection(conn)
+
+# Initialiser la base de données au démarrage
+init_db()

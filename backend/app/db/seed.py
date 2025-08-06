@@ -1,55 +1,63 @@
-# Module seed pour créer des utilisateurs par défaut
-import logging
-from .database import execute_query
-from ..core.security import get_password_hash
-
-logger = logging.getLogger(__name__)
+from ..db.database import get_user_by_email_cached, create_user, get_password_hash
+from loguru import logger
+import sqlite3
 
 def create_default_users():
-    """Créer des utilisateurs par défaut si ils n'existent pas"""
-    try:
-        # Vérifier si des utilisateurs existent déjà
-        existing_users = execute_query("SELECT COUNT(*) as count FROM users", fetch='one')
-        
-        if existing_users and existing_users['count'] > 0:
-            logger.info("Des utilisateurs existent déjà, pas de création d'utilisateurs par défaut")
-            return
-        
-        # Créer l'utilisateur admin par défaut
-        admin_password = get_password_hash("admin123")
-        admin_query = """
-            INSERT INTO users (email, hashed_password, full_name, is_active, is_superuser, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
-            ON CONFLICT (email) DO NOTHING
-        """
-        
-        execute_query(admin_query, (
-            "admin@gilbert.local",
-            admin_password,
-            "Administrateur Gilbert",
-            True,
-            True
-        ))
-        
-        # Créer un utilisateur de test
-        test_password = get_password_hash("test123")
-        test_query = """
-            INSERT INTO users (email, hashed_password, full_name, is_active, is_superuser, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
-            ON CONFLICT (email) DO NOTHING
-        """
-        
-        execute_query(test_query, (
-            "test@gilbert.local",
-            test_password,
-            "Utilisateur Test",
-            True,
-            False
-        ))
-        
-        logger.info("Utilisateurs par défaut créés avec succès")
-        
-    except Exception as e:
-        logger.error(f"Erreur lors de la création des utilisateurs par défaut: {e}")
-        # Ne pas faire planter l'application pour ça
-        pass
+    """
+    Crée des utilisateurs par défaut si ils n'existent pas déjà dans la base de données.
+    Cette fonction est appelée au démarrage de l'application.
+    Gère les erreurs de contrainte d'unicité qui peuvent se produire lors du démarrage
+    de plusieurs workers simultanément.
+    """
+    default_users = [
+        {
+            "email": "testing.admin@gilbert.fr",
+            "password": "Gilbert2025!",
+            "full_name": "Admin Test"
+        },
+        {
+            "email": "nicolas@gilbert.fr",
+            "password": "Gilbert2025!",
+            "full_name": "Nicolas Gilbert"
+        },
+        {
+            "email": "marie@dialog-ia.com",
+            "password": "Zk&6AtNmY^$!",
+            "full_name": "Marie Dialog IA"
+        },
+        {
+            "email": "mathieu@dialog-ia.com",
+            "password": "%hte#eW&2@Jv",
+            "full_name": "Mathieu Dialog IA"
+        }
+        # Ajoutez d'autres utilisateurs par défaut ici
+    ]
+    
+    for user_data in default_users:
+        try:
+            # Vérifier si l'utilisateur existe déjà
+            existing_user = get_user_by_email_cached(user_data["email"])
+            
+            if not existing_user:
+                # Créer l'utilisateur
+                hashed_password = get_password_hash(user_data["password"])
+                
+                user_dict = {
+                    "email": user_data["email"],
+                    "hashed_password": hashed_password,
+                    "full_name": user_data["full_name"]
+                }
+                
+                try:
+                    new_user = create_user(user_dict)
+                    logger.info(f"Utilisateur par défaut créé: {user_data['email']}")
+                except sqlite3.IntegrityError:
+                    # Un autre worker a probablement créé l'utilisateur entre temps
+                    logger.info(f"L'utilisateur {user_data['email']} a déjà été créé par un autre processus")
+            else:
+                logger.info(f"L'utilisateur {user_data['email']} existe déjà")
+        except Exception as e:
+            # Ne pas faire échouer le démarrage de l'application si la création d'un utilisateur échoue
+            logger.error(f"Erreur lors de la création de l'utilisateur {user_data['email']}: {str(e)}")
+    
+    logger.info("Vérification des utilisateurs par défaut terminée")
