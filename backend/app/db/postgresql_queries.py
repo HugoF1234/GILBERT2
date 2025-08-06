@@ -6,110 +6,86 @@ import logging
 from typing import Optional, Dict, Any, List
 import json
 
-# Configuration PostgreSQL
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://gilbert_user:gilbertmdp2025@postgres:5432/gilbert_db")
+# Importer les fonctions de base de données unifiées
+from .database import get_db_connection, release_db_connection, execute_query, get_db_cursor
 
-def get_db_connection():
-    """Obtenir une connexion PostgreSQL"""
+def update_meeting(meeting_id: str, user_id: str, update_data: Dict[str, Any]) -> bool:
+    """Mettre à jour un meeting dans PostgreSQL - Version unifiée"""
     try:
-        conn = psycopg2.connect(DATABASE_URL)
-        return conn
-    except Exception as e:
-        logging.error(f"Erreur de connexion PostgreSQL: {e}")
-        raise
-
-def update_meeting(meeting_id: str, update_data: Dict[str, Any]) -> bool:
-    """Mettre à jour un meeting dans PostgreSQL"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
         # Construire la requête de mise à jour
         set_clauses = []
         values = []
         
         for key, value in update_data.items():
-            if key in ['transcript_json', 'metadata'] and isinstance(value, dict):
-                # Convertir les dictionnaires en JSON
+            if key in ['metadata'] and isinstance(value, dict):
+                # Convertir les dictionnaires en JSON pour PostgreSQL
                 set_clauses.append(f"{key} = %s")
                 values.append(json.dumps(value))
             else:
                 set_clauses.append(f"{key} = %s")
                 values.append(value)
         
-        values.append(meeting_id)
+        if not set_clauses:
+            return False
+        
+        values.extend([datetime.utcnow(), meeting_id, user_id])
         
         query = f"""
             UPDATE meetings 
             SET {', '.join(set_clauses)}, updated_at = %s
-            WHERE id = %s
+            WHERE id = %s AND user_id = %s
         """
-        values.append(datetime.utcnow())
         
-        cursor.execute(query, values)
-        conn.commit()
-        
-        return cursor.rowcount > 0
+        rowcount = execute_query(query, tuple(values))
+        return rowcount > 0
         
     except Exception as e:
-        if conn:
-            conn.rollback()
-        logging.error(f"Erreur lors de la mise à jour du meeting: {e}")
+        logging.error(f"Erreur lors de la mise à jour du meeting {meeting_id}: {e}")
         raise
-    finally:
-        if conn:
-            conn.close()
 
-def get_meeting(meeting_id: str) -> Optional[Dict[str, Any]]:
-    """Récupérer un meeting par ID"""
-    conn = None
+def get_meeting(meeting_id: str, user_id: str = None) -> Optional[Dict[str, Any]]:
+    """Récupérer un meeting par ID - Version unifiée"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        if user_id:
+            query = "SELECT * FROM meetings WHERE id = %s AND user_id = %s"
+            params = (meeting_id, user_id)
+        else:
+            query = "SELECT * FROM meetings WHERE id = %s"
+            params = (meeting_id,)
         
-        cursor.execute(
-            "SELECT * FROM meetings WHERE id = %s",
-            (meeting_id,)
-        )
-        
-        meeting = cursor.fetchone()
+        meeting = execute_query(query, params, fetch='one')
         
         if meeting:
-            # Convertir les champs JSON
-            if meeting.get('transcript_json'):
-                meeting['transcript_json'] = json.loads(meeting['transcript_json'])
-            if meeting.get('metadata'):
-                meeting['metadata'] = json.loads(meeting['metadata'])
+            # Convertir les champs JSON si nécessaire
+            if meeting.get('metadata') and isinstance(meeting['metadata'], str):
+                try:
+                    meeting['metadata'] = json.loads(meeting['metadata'])
+                except:
+                    pass
             
-            return dict(meeting)
+            # Normaliser les champs pour compatibilité
+            meeting['id'] = str(meeting['id'])
+            meeting['user_id'] = str(meeting['user_id'])
+            
+            return meeting
         
         return None
         
     except Exception as e:
-        logging.error(f"Erreur lors de la récupération du meeting: {e}")
+        logging.error(f"Erreur lors de la récupération du meeting {meeting_id}: {e}")
         raise
-    finally:
-        if conn:
-            conn.close()
 
-def normalize_transcript_format(transcript_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Normaliser le format de transcription"""
-    if not transcript_data:
-        return {}
-    
-    # Si c'est déjà un dictionnaire, le retourner
-    if isinstance(transcript_data, dict):
-        return transcript_data
-    
-    # Si c'est une chaîne JSON, la parser
-    if isinstance(transcript_data, str):
-        try:
-            return json.loads(transcript_data)
-        except:
-            return {}
-    
-    return {}
+def normalize_transcript_format(text: str) -> str:
+    """Normaliser le format du texte de transcription"""
+    if not text:
+        return ""
+        
+    # Si le texte contient déjà des marqueurs de locuteurs au format 'Speaker X: ', on le laisse tel quel
+    if "Speaker " in text and ": " in text:
+        return text
+        
+    # Sinon, on le considère comme un texte brut d'un seul locuteur
+    return f"Speaker A: {text}"
 
 def get_meeting_speakers(meeting_id: str) -> List[Dict[str, Any]]:
     """Récupérer les speakers d'un meeting"""
@@ -202,6 +178,86 @@ def update_speaker(speaker_id: str, update_data: Dict[str, Any]) -> bool:
         if conn:
             conn.rollback()
         logging.error(f"Erreur lors de la mise à jour du speaker: {e}")
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+def create_meeting(meeting_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Créer un nouveau meeting"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        cursor.execute(
+            """
+            INSERT INTO meetings (user_id, title, audio_file_path, status, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING *
+            """,
+            (
+                meeting_data["user_id"],
+                meeting_data.get("title", ""),
+                meeting_data.get("audio_file_path", ""),
+                meeting_data.get("status", "pending"),
+                datetime.utcnow(),
+                datetime.utcnow()
+            )
+        )
+        
+        meeting = cursor.fetchone()
+        conn.commit()
+        
+        return dict(meeting) if meeting else None
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logging.error(f"Erreur lors de la création du meeting: {e}")
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+def get_meetings_by_user(user_id: str) -> List[Dict[str, Any]]:
+    """Récupérer tous les meetings d'un utilisateur"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        cursor.execute(
+            "SELECT * FROM meetings WHERE user_id = %s ORDER BY created_at DESC",
+            (user_id,)
+        )
+        
+        meetings = cursor.fetchall()
+        return [dict(meeting) for meeting in meetings]
+        
+    except Exception as e:
+        logging.error(f"Erreur lors de la récupération des meetings: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+def delete_meeting(meeting_id: str) -> bool:
+    """Supprimer un meeting"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM meetings WHERE id = %s", (meeting_id,))
+        conn.commit()
+        
+        return cursor.rowcount > 0
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logging.error(f"Erreur lors de la suppression du meeting: {e}")
         raise
     finally:
         if conn:

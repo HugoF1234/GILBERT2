@@ -12,7 +12,7 @@ import subprocess
 import threading
 
 from ..core.config import settings
-from ..db.postgresql_queries import update_meeting, get_meeting, normalize_transcript_format, get_meeting_speakers
+from ..db.queries import update_meeting, get_meeting, normalize_transcript_format, get_meeting_speakers
 
 # Configuration pour AssemblyAI
 # Utiliser directement la clé API fournie au lieu de passer par settings
