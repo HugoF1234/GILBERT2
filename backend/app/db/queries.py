@@ -391,6 +391,28 @@ def clean_transcript_text(text: str) -> str:
     
     return text
 
+def set_meeting_speaker(meeting_id: int, speaker_name: str, new_speaker_name: str, user_id: int = None) -> bool:
+    """Met à jour le nom d'un speaker dans un meeting"""
+    try:
+        # Récupérer d'abord le meeting pour s'assurer qu'il appartient à l'utilisateur
+        meeting = get_meeting(meeting_id, user_id)
+        if not meeting:
+            return False
+            
+        # Mettre à jour le speaker
+        query = """
+        UPDATE speakers 
+        SET speaker_name = %s 
+        WHERE meeting_id = %s AND speaker_name = %s
+        """
+        
+        result = execute_query(query, (new_speaker_name, meeting_id, speaker_name), query_type="UPDATE")
+        return result is not None
+        
+    except Exception as e:
+        logger.error(f"Erreur lors de la mise à jour du speaker: {e}")
+        return False
+
 # =============================================================================
 # EXPORT DU MODULE
 # =============================================================================
@@ -406,6 +428,7 @@ __all__ = [
     'get_meeting_speakers',
     'create_speaker',
     'update_speaker',
+    'set_meeting_speaker',
     'normalize_transcript_format',
     'get_user_meetings_count',
     'get_user_stats',
