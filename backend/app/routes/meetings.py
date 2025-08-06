@@ -6,7 +6,7 @@ from ..models.meeting import Meeting, MeetingCreate, MeetingUpdate
 from ..db.firebase import upload_mp3
 from ..services.assemblyai import transcribe_meeting, convert_to_wav, check_transcription_status, process_transcription
 from ..services.mistral_summary import process_meeting_summary
-from ..db.queries import create_meeting, get_meeting, get_meetings_by_user, update_meeting, delete_meeting, get_meeting_speakers
+from ..db.postgresql_queries import get_meeting, update_meeting, get_meeting_speakers, create_meeting, get_meetings_by_user, delete_meeting
 from datetime import datetime
 from typing import List, Optional
 import os
