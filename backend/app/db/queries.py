@@ -391,27 +391,87 @@ def clean_transcript_text(text: str) -> str:
     
     return text
 
-def set_meeting_speaker(meeting_id: int, speaker_name: str, new_speaker_name: str, user_id: int = None) -> bool:
-    """Met à jour le nom d'un speaker dans un meeting"""
+def set_meeting_speaker(meeting_id: str, user_id: str, speaker_id: str, custom_name: str) -> bool:
+    """Met à jour ou crée le nom personnalisé d'un speaker dans un meeting"""
     try:
         # Récupérer d'abord le meeting pour s'assurer qu'il appartient à l'utilisateur
         meeting = get_meeting(meeting_id, user_id)
         if not meeting:
             return False
             
-        # Mettre à jour le speaker
-        query = """
-        UPDATE speakers 
-        SET speaker_name = %s 
-        WHERE meeting_id = %s AND speaker_name = %s
-        """
+        # Vérifier si un mapping existe déjà pour ce speaker
+        existing_speaker = get_custom_speaker_name(meeting_id, speaker_id)
         
-        result = execute_query(query, (new_speaker_name, meeting_id, speaker_name), query_type="UPDATE")
+        if existing_speaker:
+            # Mettre à jour le nom existant
+            query = """
+            UPDATE speakers 
+            SET custom_name = %s, updated_at = %s
+            WHERE meeting_id = %s AND speaker_id = %s
+            """
+            result = execute_query(query, (custom_name, datetime.utcnow(), meeting_id, speaker_id), query_type="UPDATE")
+        else:
+            # Créer un nouveau mapping
+            query = """
+            INSERT INTO speakers (meeting_id, speaker_id, custom_name, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s)
+            """
+            result = execute_query(query, (meeting_id, speaker_id, custom_name, datetime.utcnow(), datetime.utcnow()), query_type="INSERT")
+        
         return result is not None
         
     except Exception as e:
         logger.error(f"Erreur lors de la mise à jour du speaker: {e}")
         return False
+
+def delete_meeting_speaker(meeting_id: str, speaker_id: str, user_id: str = None) -> bool:
+    """Supprime un mapping de nom personnalisé pour un speaker"""
+    try:
+        # Récupérer d'abord le meeting pour s'assurer qu'il appartient à l'utilisateur
+        if user_id:
+            meeting = get_meeting(meeting_id, user_id)
+            if not meeting:
+                return False
+        
+        # Supprimer le mapping du speaker
+        query = """
+        DELETE FROM speakers 
+        WHERE meeting_id = %s AND speaker_id = %s
+        """
+        
+        result = execute_query(query, (meeting_id, speaker_id), query_type="DELETE")
+        return result is not None and result > 0
+        
+    except Exception as e:
+        logger.error(f"Erreur lors de la suppression du speaker: {e}")
+        return False
+
+def get_custom_speaker_name(meeting_id: str, speaker_id: str) -> Optional[Dict[str, Any]]:
+    """Récupère le nom personnalisé d'un speaker spécifique"""
+    try:
+        query = """
+        SELECT * FROM speakers 
+        WHERE meeting_id = %s AND speaker_id = %s
+        """
+        
+        result = execute_query(query, (meeting_id, speaker_id), fetch='one')
+        
+        if result:
+            return {
+                'id': str(result['id']),
+                'meeting_id': str(result['meeting_id']),
+                'speaker_id': result['speaker_id'],
+                'custom_name': result['custom_name'],
+                'confidence': result.get('confidence', 0.0),
+                'created_at': result['created_at'].isoformat() if result.get('created_at') else None,
+                'updated_at': result['updated_at'].isoformat() if result.get('updated_at') else None
+            }
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération du nom personnalisé du speaker: {e}")
+        return None
 
 # =============================================================================
 # EXPORT DU MODULE
@@ -429,6 +489,8 @@ __all__ = [
     'create_speaker',
     'update_speaker',
     'set_meeting_speaker',
+    'delete_meeting_speaker',
+    'get_custom_speaker_name',
     'normalize_transcript_format',
     'get_user_meetings_count',
     'get_user_stats',
