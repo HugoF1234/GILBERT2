@@ -205,4 +205,84 @@ def update_speaker(speaker_id: str, update_data: Dict[str, Any]) -> bool:
         raise
     finally:
         if conn:
+            conn.close()
+
+def create_meeting(meeting_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Créer un nouveau meeting"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        cursor.execute(
+            """
+            INSERT INTO meetings (user_id, title, audio_file_path, status, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING *
+            """,
+            (
+                meeting_data["user_id"],
+                meeting_data.get("title", ""),
+                meeting_data.get("audio_file_path", ""),
+                meeting_data.get("status", "pending"),
+                datetime.utcnow(),
+                datetime.utcnow()
+            )
+        )
+        
+        meeting = cursor.fetchone()
+        conn.commit()
+        
+        return dict(meeting) if meeting else None
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logging.error(f"Erreur lors de la création du meeting: {e}")
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+def get_meetings_by_user(user_id: str) -> List[Dict[str, Any]]:
+    """Récupérer tous les meetings d'un utilisateur"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        cursor.execute(
+            "SELECT * FROM meetings WHERE user_id = %s ORDER BY created_at DESC",
+            (user_id,)
+        )
+        
+        meetings = cursor.fetchall()
+        return [dict(meeting) for meeting in meetings]
+        
+    except Exception as e:
+        logging.error(f"Erreur lors de la récupération des meetings: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+def delete_meeting(meeting_id: str) -> bool:
+    """Supprimer un meeting"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM meetings WHERE id = %s", (meeting_id,))
+        conn.commit()
+        
+        return cursor.rowcount > 0
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logging.error(f"Erreur lors de la suppression du meeting: {e}")
+        raise
+    finally:
+        if conn:
             conn.close() 
