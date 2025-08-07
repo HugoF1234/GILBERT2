@@ -128,6 +128,15 @@ async def health_check():
     """
     return {"status": "healthy", "timestamp": time.time()}
 
+@app.get("/api/health", tags=["Statut"])
+async def api_health_check():
+    """
+    Vérifie l'état de santé de l'API via /api/health.
+    
+    Cette route permet de vérifier si l'API est en ligne.
+    """
+    return {"status": "healthy", "timestamp": time.time()}
+
 # Intégration des routes
 app.include_router(auth.router, prefix="")
 app.include_router(meetings.router, prefix="")

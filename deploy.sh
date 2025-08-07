@@ -153,7 +153,7 @@ wait_for_services() {
     
     # Attendre l'API
     log_info "Attente de l'API..."
-    timeout 120 bash -c 'until curl -f http://localhost/api/health > /dev/null 2>&1; do sleep 5; done' || {
+    timeout 120 bash -c 'until docker exec gilbert-api curl -f http://localhost:8000/health > /dev/null 2>&1; do sleep 5; done' || {
         log_error "L'API ne répond pas après 120 secondes"
         return 1
     }

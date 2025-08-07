@@ -26,7 +26,8 @@ server {
 
 # Configuration HTTPS principale
 server {
-    listen 443 ssl http2;
+    listen 443 ssl;
+    http2 on;
     server_name gilbert-assistant.ovh;
 
     # Certificats SSL
@@ -111,7 +112,7 @@ server {
 
     # Fallback pour les routes React
     location @fallback {
-        proxy_pass http://frontend:80/;
+        proxy_pass http://frontend:80;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
