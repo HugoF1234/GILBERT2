@@ -71,6 +71,21 @@ async def register(user_data: UserCreate = Body(..., description="Informations d
         
         new_user = create_user(user_dict)
         
+        # Générer un token JWT pour l'utilisateur nouvellement créé
+        access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": str(new_user["id"])},
+            expires_delta=access_token_expires
+        )
+        
+        return {
+            "message": "Utilisateur créé avec succès",
+            "user": new_user,
+            "access_token": access_token,
+            "token_type": "bearer",
+            "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        }
+        
     except HTTPException as e:
         raise e
     except Exception as e:
