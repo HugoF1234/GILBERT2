@@ -1,7 +1,7 @@
 import { logoutUser } from './authService';
 
 // Base URL for API calls - utilise VITE_API_BASE_URL pour le développement local
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://gilbert-assistant.ovh';
 
 // Fonction pour récupérer le token d'authentification
 function getAuthToken() {
@@ -92,7 +92,7 @@ async function request<T>(
   
     // Set content type header based on whether we're sending multipart form data
     // IMPORTANT: NE PAS définir Content-Type pour FormData, fetch le fera automatiquement avec le boundary
-    if (!withMultipart && data && !(data instanceof FormData)) {
+    if (!withMultipart && data && !(data instanceof FormData) && !(data instanceof URLSearchParams)) {
       headers['Content-Type'] = 'application/json';
     }
   

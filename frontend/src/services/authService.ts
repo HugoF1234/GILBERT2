@@ -3,18 +3,18 @@ import config from '../config/environment';
 
 export interface User {
   id: string;
-  email: string;
+  username: string;
   name?: string; 
 }
 
 export interface RegisterParams {
-  email: string;
+  username: string;
   password: string;
   name: string;
 }
 
 export interface LoginParams {
-  email: string;
+  username: string;
   password: string;
 }
 
@@ -48,8 +48,13 @@ export async function registerUser(params: RegisterParams): Promise<AuthResponse
  */
 export async function loginUser(params: LoginParams): Promise<AuthResponse> {
   try {
+        // Convertir les paramètres en format form-urlencoded pour lAPI
+    const formData = new URLSearchParams();
+    formData.append("username", params.username);
+    formData.append("password", params.password);
+    
     const response = await apiClient.post<AuthResponse>(
-      '/auth/login/json',  
+      '/auth/login',  
       params,
       false,
       false
@@ -136,7 +141,7 @@ export async function initiateGoogleLogin(): Promise<void> {
   try {
     // Redirection directe vers l'endpoint backend Google OAuth
     // Le backend va automatiquement rediriger vers Google OAuth
-    const backendUrl = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000';
+    const backendUrl = import.meta.env.VITE_API_BASE_URL || 'https://gilbert-assistant.ovh';
     const googleAuthUrl = `${backendUrl}/auth/google`;
     
     console.log('Redirecting to Google OAuth via backend:', googleAuthUrl);

@@ -71,10 +71,6 @@ async def register(user_data: UserCreate = Body(..., description="Informations d
         
         new_user = create_user(user_dict)
         
-        return {
-            "message": "Utilisateur créé avec succès",
-            "user": new_user
-        }
     except HTTPException as e:
         raise e
     except Exception as e:
@@ -125,11 +121,6 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         purge_old_entries_from_cache()
         purge_password_cache()
         
-        return {
-            "access_token": access_token,
-            "token_type": "bearer",
-            "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60  # Conversion en secondes
-        }
     except HTTPException as e:
         raise e
     except Exception as e:
@@ -183,11 +174,6 @@ async def login_json(login_data: LoginRequest):
         purge_old_entries_from_cache()
         purge_password_cache()
         
-        return {
-            "access_token": access_token,
-            "token_type": "bearer",
-            "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60  # Conversion en secondes
-        }
     except HTTPException as e:
         raise e
     except Exception as e:
@@ -242,11 +228,6 @@ async def refresh_token(current_user: dict = Depends(get_current_user)):
             expires_delta=access_token_expires
         )
         
-        return {
-            "access_token": access_token,
-            "token_type": "bearer",
-            "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60  # Conversion en secondes
-        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors du rafraîchissement du token: {str(e)}")
 

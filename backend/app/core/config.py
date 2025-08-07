@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
     
     # Configuration de la base de données
-    DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR}/app.db")
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://gilbert_user:gilbert_secure_password_2025@postgres:5432/gilbert_db")
     DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "10"))
     DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
     

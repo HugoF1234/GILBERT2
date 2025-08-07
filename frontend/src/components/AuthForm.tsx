@@ -68,8 +68,8 @@ const AuthForm: React.FC<AuthFormProps> = ({ onAuthSuccess }) => {
       
       // Liste des endpoints à tester dans l'ordre
       const endpointsToTry = [
-        `${API_BASE_URL}/`,       // Racine de l'API
-        `${API_BASE_URL}/docs`,   // Documentation (fallback)
+        `${API_BASE_URL}/health`, // Seul endpoint qui fonctionne
+        
         `${API_BASE_URL}/health`, // Endpoint de santé
       ];
       
@@ -146,7 +146,7 @@ const AuthForm: React.FC<AuthFormProps> = ({ onAuthSuccess }) => {
     
     try {
       await loginUser({
-        email: loginEmail,
+        username: loginEmail,
         password: loginPassword,
       });
       

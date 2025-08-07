@@ -107,7 +107,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        VITE_API_URL: https://gilbert-assistant.ovh
+        VITE_API_BASE_URL: https://gilbert-assistant.ovh
     container_name: gilbert-frontend
     restart: unless-stopped
     healthcheck:
