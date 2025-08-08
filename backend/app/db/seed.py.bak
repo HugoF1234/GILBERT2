@@ -1,6 +1,5 @@
-from ..db.postgres_database import get_user_by_email, create_user, get_password_hash
+from ..db.postgres_database import get_user_by_email_cached, create_user, get_password_hash
 from loguru import logger
-import asyncio
 
 async def create_default_users():
     """
@@ -48,8 +47,12 @@ async def create_default_users():
                     "full_name": user_data["full_name"]
                 }
                 
-                new_user = await create_user(user_dict)
-                logger.info(f"Utilisateur par défaut créé: {user_data['email']}")
+                try:
+                    new_user = await create_user(user_dict)
+                    logger.info(f"Utilisateur par défaut créé: {user_data['email']}")
+                except Exception:
+                    # Un autre worker a probablement créé l'utilisateur entre temps
+                    logger.info(f"L'utilisateur {user_data['email']} a déjà été créé par un autre processus")
             else:
                 logger.info(f"L'utilisateur {user_data['email']} existe déjà")
         except Exception as e:

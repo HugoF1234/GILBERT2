@@ -53,7 +53,9 @@ export async function loginUser(params: LoginParams): Promise<AuthResponse> {
     formData.append("username", params.username);
     formData.append("password", params.password);
     
-    const response = await apiClient.post<AuthResponse>('/auth/login/json', { email: params.username, password: params.password },
+    const response = await apiClient.post<AuthResponse>(
+      '/auth/login/json',  
+      params,
       false,
       false
     );

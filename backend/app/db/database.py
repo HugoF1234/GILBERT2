@@ -397,5 +397,5 @@ def get_user_by_oauth(oauth_provider, oauth_id):
     finally:
         release_db_connection(conn)
 
-# Initialiser la base de données au démarrage
-init_db()
+# Note: l'initialisation automatique de SQLite est désactivée pour éviter
+# d'interférer avec l'environnement PostgreSQL en production.
