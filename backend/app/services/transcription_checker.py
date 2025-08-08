@@ -53,7 +53,7 @@ def check_and_update_transcription(meeting: Dict[str, Any]) -> Dict[str, Any]:
                 user_id = meeting.get('user_id')
                 
                 # Import ici pour éviter les imports circulaires
-                from ..db.queries import get_meeting_speakers
+                from ..db.postgres_meetings import get_meeting_speakers
                 speakers_data = get_meeting_speakers(meeting_id, user_id)
                 
                 if speakers_data:
@@ -83,7 +83,7 @@ def check_and_update_transcription(meeting: Dict[str, Any]) -> Dict[str, Any]:
         meeting['speakers_count'] = speakers_count
         
         # Mettre à jour la base de données
-        from ..db.queries import update_meeting
+        from ..db.postgres_meetings import update_meeting
         update_meeting(meeting['id'], meeting['user_id'], {
             "transcript_status": "completed",
             "transcript_text": transcript_text,
@@ -100,7 +100,7 @@ def check_and_update_transcription(meeting: Dict[str, Any]) -> Dict[str, Any]:
         meeting['transcript_text'] = f"Erreur lors de la transcription: {error_message}"
         
         # Mettre à jour la base de données
-        from ..db.queries import update_meeting
+        from ..db.postgres_meetings import update_meeting
         update_meeting(meeting['id'], meeting['user_id'], {
             "transcript_status": "error",
             "transcript_text": f"Erreur lors de la transcription: {error_message}"

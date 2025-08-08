@@ -12,7 +12,13 @@ import traceback
 
 from ..core.security import get_current_user
 from ..services.assemblyai import transcribe_meeting
-from ..db.queries import get_meeting, get_meetings_by_user, update_meeting, delete_meeting, create_meeting
+from ..db.postgres_meetings import (
+    get_meeting,
+    get_meetings_by_user,
+    update_meeting,
+    delete_meeting,
+    create_meeting,
+)
 from ..core.config import settings
 from ..services.transcription_checker import check_and_update_transcription
 
@@ -107,7 +113,7 @@ def periodic_transcription_check(meeting_id: str, transcript_id: str, user_id: s
     """
     import time
     from ..services.assemblyai import get_transcript_status
-    from ..db.queries import get_meeting, update_meeting
+    from ..db.postgres_meetings import get_meeting, update_meeting
     
     logger.info(f"Démarrage de la vérification périodique pour la transcription {transcript_id}")
     
@@ -248,7 +254,7 @@ async def get_meeting_details(
         # Appliquer les noms personnalisés des speakers à la transcription si elle est complétée
         if meeting.get("transcript_status") == "completed" and meeting.get("transcript_id"):
             try:
-                from ..db.queries import get_meeting_speakers
+                from ..db.postgres_meetings import get_meeting_speakers
                 from ..services.transcription_checker import get_assemblyai_transcript_details, format_transcript_text
                 
                 logger.info(f"Application des noms personnalisés à la transcription pour la réunion {meeting_id}")

@@ -10,7 +10,7 @@ import asyncio
 import threading
 from datetime import datetime, timedelta
 from ..core.config import settings
-from ..db.queries import get_meeting, update_meeting
+from ..db.postgres_meetings import get_meeting, update_meeting
 from .assemblyai import process_transcription
 from fastapi.logger import logger
 

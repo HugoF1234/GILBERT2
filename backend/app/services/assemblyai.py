@@ -12,7 +12,7 @@ import subprocess
 import threading
 
 from ..core.config import settings
-from ..db.queries import update_meeting, get_meeting, normalize_transcript_format, get_meeting_speakers
+from ..db.postgres_meetings import update_meeting, get_meeting, get_meeting_speakers, normalize_transcript_format
 
 # Configuration pour AssemblyAI
 # Utiliser directement la clé API fournie au lieu de passer par settings
@@ -531,7 +531,7 @@ def process_pending_transcriptions():
     Cette fonction utilise l'API REST d'AssemblyAI pour être plus fiable.
     """
     import requests
-    from ..db.queries import get_pending_transcriptions, get_meetings_by_status, get_meeting
+    from ..db.postgres_meetings import get_pending_transcriptions, get_meetings_by_status, get_meeting
     from ..core.config import settings
     
     # Utiliser directement la clé API AssemblyAI définie en haut du fichier

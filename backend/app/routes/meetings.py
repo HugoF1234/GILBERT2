@@ -6,7 +6,14 @@ from ..models.meeting import Meeting, MeetingCreate, MeetingUpdate
 from ..db.firebase import upload_mp3
 from ..services.assemblyai import transcribe_meeting, convert_to_wav, check_transcription_status, process_transcription
 from ..services.mistral_summary import process_meeting_summary
-from ..db.queries import create_meeting, get_meeting, get_meetings_by_user, update_meeting, delete_meeting, get_meeting_speakers
+from ..db.postgres_meetings import (
+    create_meeting,
+    get_meeting,
+    get_meetings_by_user,
+    update_meeting,
+    delete_meeting,
+    get_meeting_speakers,
+)
 from datetime import datetime
 from typing import List, Optional
 import os
@@ -528,6 +535,7 @@ async def validate_meeting_ids(
     
     Utile pour nettoyer le cache côté frontend après suppression de meetings.
     """
+    # Cette route n'est plus utilisée pour SQLite; conservée pour compat mais non appelée
     from ..db.database import get_db_connection
     
     logger.info(f"Validating {len(meeting_ids)} meeting IDs for user: {current_user['id']}")

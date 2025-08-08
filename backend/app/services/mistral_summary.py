@@ -207,7 +207,7 @@ def process_meeting_summary(meeting_id: str, user_id: str, client_id: Optional[s
     Returns:
         bool: True si le traitement a réussi, False sinon
     """
-    from ..db.queries import get_meeting, update_meeting, get_meeting_speakers
+    from ..db.postgres_meetings import get_meeting, update_meeting, get_meeting_speakers
     from ..services.transcription_checker import get_assemblyai_transcript_details, replace_speaker_names_in_text
     
     try:
